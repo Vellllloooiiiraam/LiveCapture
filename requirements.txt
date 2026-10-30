@@ -1,0 +1,16 @@
+# LiveCapture - requisitos Python
+# Instale com:  python -m pip install -r requirements.txt
+#
+# IMPORTANTE (Python): use Python 3.11-3.13. No Python 3.15 o PyAV (av)
+# ainda nao tem wheel e a instalacao do faster-whisper falha.
+# Tambem e necessario o ffmpeg instalado no sistema (no PATH).
+
+numpy>=1.26
+faster-whisper>=1.1
+streamlink>=6.0
+yt-dlp>=2024.1
+
+# av (PyAV) 19 removeu o parametro metadata_errors que o faster-whisper usa.
+# Fixamos abaixo da 19 para evitar o erro
+# "open() got an unexpected keyword argument 'metadata_errors'".
+av>=11,<19

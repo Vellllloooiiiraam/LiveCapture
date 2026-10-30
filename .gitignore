@@ -1,0 +1,19 @@
+# Ambiente / build
+.venv/
+.venv-*/
+venv/
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+
+# Saidas do app (nao versionar conteudo de live)
+clipes/
+ocorrencias.csv
+*.mp4
+*.ts
+
+# Temporarios
+*.log
+.bak

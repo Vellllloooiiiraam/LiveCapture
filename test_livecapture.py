@@ -70,6 +70,11 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(L.normalize("Bom!  Dia,"), "bom dia")
         self.assertIn(" bom dia ", " " + L.normalize("Bom, dia!") + " ")
 
+    def test_normalize_preserva_alfabetos_unicode(self):
+        self.assertEqual(L.normalize("こんにちは 世界! Привет мир!"),
+                         "こんにちは 世界 привет мир")
+        self.assertEqual(L.normalize("مرحبا بالعالم"), "مرحبا بالعالم")
+
     def test_fmt(self):
         self.assertEqual(L.fmt(0), "00:00:00")
         self.assertEqual(L.fmt(3661), "01:01:01")
@@ -78,6 +83,7 @@ class TestUtils(unittest.TestCase):
     def test_safe_name(self):
         self.assertEqual(L.safe_name("Olá Mundo!"), "ola_mundo")
         self.assertEqual(L.safe_name("!!!"), "palavra")
+        self.assertEqual(L.safe_name("日本語"), "日本語")
 
     def test_parse_start_valido(self):
         self.assertIsNotNone(L.parse_start("21:30"))

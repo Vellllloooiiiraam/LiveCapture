@@ -38,8 +38,10 @@ $exe = Join-Path $proj "dist\LiveCapture.exe"
 if (Test-Path $exe) {
     $target = $exe; $arguments = ""
 } else {
+    # O launcher configura LIVECAPTURE_HOME para Videos\LiveCapture,
+    # prepara o ambiente e inicia a GUI. Não chame livecapture_gui.py direto.
     $target = Join-Path $root "venv\Scripts\pythonw.exe"
-    $arguments = '"' + (Join-Path $root "app\livecapture_gui.py") + '"'
+    $arguments = '"' + (Join-Path $proj "launcher.py") + '"'
 }
 
 $lnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "LiveCapture.lnk"
@@ -47,10 +49,10 @@ $shell = New-Object -ComObject WScript.Shell
 $sc = $shell.CreateShortcut($lnk)
 $sc.TargetPath = $target
 $sc.Arguments = $arguments
-$sc.WorkingDirectory = $root
+$sc.WorkingDirectory = $proj
 $sc.IconLocation = "$target,0"
 $sc.Save()
 
 Write-Host ""
 Write-Host "Instalado! Atalho criado em $lnk"
-Write-Host "Pasta de dados: $root"
+Write-Host ("Pasta de dados: " + (Join-Path $env:USERPROFILE "Videos\LiveCapture"))

@@ -42,7 +42,7 @@ SEGMENT_SEC = 2               # tamanho dos pedaços do buffer
 BUFFER_KEEP_SEC = 150         # quanto da live fica no buffer
 AUDIO_QUALITY = "audio_only,worst"
 VIDEO_QUALITY = "480p,360p,worst"   # qualidade usada quando o clipe está ligado
-MAX_CLIP_JOBS = 2             # concatenações de clipe simultâneas
+MAX_CLIP_JOBS = 2             # máximo de clipes em execução ou na fila
 # Pasta de saida: o launcher define LIVECAPTURE_HOME (Videos\LiveCapture).
 # Sem a variavel, usa a pasta atual (como antes).
 DATA_DIR = os.environ.get("LIVECAPTURE_HOME", "")
@@ -86,11 +86,15 @@ def find_tool(name):
 
 
 def normalize(text):
-    text = unicodedata.normalize("NFKD", text.lower())
-    text = "".join(c for c in text if not unicodedata.combining(c))
-    text = re.sub(r"[^a-z0-9\s]", " ", text)
-    # colapsa espaços para não quebrar palavras-chave com várias palavras
-    return re.sub(r"\s+", " ", text).strip()
+    """Normaliza acentos/pontuação sem descartar alfabetos não latinos."""
+    text = unicodedata.normalize("NFKD", str(text).casefold())
+    chars = []
+    for char in text:
+        if unicodedata.combining(char):
+            continue
+        # Mantém letras/números Unicode (japonês, cirílico, árabe etc.) e espaços.
+        chars.append(char if char.isalnum() or char.isspace() else " ")
+    return re.sub(r"\s+", " ", "".join(chars)).strip()
 
 
 def fmt(seconds):
@@ -99,7 +103,10 @@ def fmt(seconds):
 
 
 def safe_name(text):
-    return re.sub(r"[^A-Za-z0-9_-]+", "_", normalize(text).strip())[:30] or "palavra"
+    # Preserva letras Unicode no nome do arquivo e remove caracteres inválidos.
+    value = "".join(c if c.isalnum() or c in "_-" else "_" for c in normalize(text))
+    value = re.sub(r"_+", "_", value).strip("_-")
+    return value[:30] or "palavra"
 
 
 def parse_start(text):
@@ -168,11 +175,16 @@ def make_clip(tmp_dir, list_path, media_t, pre, post, out_path, stop):
     """Junta os pedaços do buffer de (media_t - pre) até (media_t + post)."""
     t0, t1 = max(0.0, media_t - pre), media_t + post
     deadline = time.time() + post + 45
-    while not stop.is_set() and time.time() < deadline:   # espera o "depois" chegar
+    # Parar a captura não cancela o clipe: aguardamos a janela posterior até
+    # ela chegar ou até o limite. Se a live cair, o timeout permite salvar o
+    # trecho disponível sem manter o worker preso indefinidamente.
+    while time.time() < deadline:
         rows = read_segments(list_path)
-        if rows and rows[-1][2] >= t1:
+        if not rows:
+            return False
+        if rows[-1][2] >= t1:
             break
-        time.sleep(1)
+        time.sleep(0.5)
     # Mesmo se o usuario parou, corta o que ja esta no buffer (nao perde o clipe).
     pieces = [r for r in read_segments(list_path)
               if r[2] > t0 and r[1] < t1 and os.path.exists(os.path.join(tmp_dir, r[0]))]
@@ -190,13 +202,15 @@ def make_clip(tmp_dir, list_path, media_t, pre, post, out_path, stop):
         res = subprocess.run(
             common + ["-c", "copy", "-avoid_negative_ts", "make_zero",
                       "-movflags", "+faststart", out_path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **NO_WINDOW)
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=120, **NO_WINDOW)
         ok = res.returncode == 0 and os.path.exists(out_path)
         if not ok:                       # -c copy falhou: recodifica para não perder o clipe
             res = subprocess.run(
                 common + ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
                           "-movflags", "+faststart", out_path],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **NO_WINDOW)
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=180, **NO_WINDOW)
             ok = res.returncode == 0 and os.path.exists(out_path)
         return ok
     finally:
@@ -218,8 +232,9 @@ class Worker(threading.Thread):
         self.lang = None if lang in (None, "", "auto") else lang
         self.model, self.on_cpu, self.sl_err = None, False, ""
         self.procs, self.tmp = [], None
+        self._proc_lock = threading.Lock()
         self.clip_threads = []
-        self.clip_sem = threading.Semaphore(MAX_CLIP_JOBS)
+        self.clip_sem = threading.BoundedSemaphore(MAX_CLIP_JOBS)
 
     def run(self):
         try:
@@ -228,17 +243,40 @@ class Worker(threading.Thread):
             self.out.put(("end", f"Erro: {e}", self))
         finally:
             self.kill()
-            for t in list(self.clip_threads):      # deixa os clipes em curso terminarem
-                t.join(timeout=max(60, self.post + 45))
+            # Não apague o buffer enquanto qualquer FFmpeg ainda o estiver lendo.
+            # Cada clipe tem timeout próprio; aguardamos a conclusão real.
+            for t in list(self.clip_threads):
+                t.join()
             if self.tmp:
                 shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def kill(self):
-        for p in self.procs:
+    def _register_proc(self, proc):
+        with self._proc_lock:
+            self.procs.append(proc)
+            should_stop = self.stop.is_set()
+        if should_stop:
+            self._terminate_proc(proc)
+        return proc
+
+    @staticmethod
+    def _terminate_proc(proc):
+        if proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
             try:
-                p.kill()
+                proc.kill()
+                proc.wait(timeout=3)
             except Exception:
                 pass
+
+    def kill(self):
+        with self._proc_lock:
+            procs = list(self.procs)
+        for proc in procs:
+            self._terminate_proc(proc)
 
     def _load_model(self, device="auto"):
         from faster_whisper import WhisperModel
@@ -273,9 +311,9 @@ class Worker(threading.Thread):
 
         self.out.put(("status", "Abrindo a live..."))
         quality = VIDEO_QUALITY if self.clip_on else AUDIO_QUALITY
-        sl = subprocess.Popen(
+        sl = self._register_proc(subprocess.Popen(
             [find_tool("streamlink"), self.url, quality, "--stdout", "--loglevel", "error"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, **NO_WINDOW)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, **NO_WINDOW))
 
         def drain_err():                     # guarda o motivo se o streamlink falhar
             for line in sl.stderr:
@@ -297,10 +335,23 @@ class Worker(threading.Thread):
                     "-segment_list", list_path, "-segment_list_type", "csv",
                     "-segment_list_flags", "+live",
                     os.path.join(self.tmp, "seg_%06d.ts")]
-        ff = subprocess.Popen(cmd, stdin=sl.stdout, stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL, **NO_WINDOW)
-        sl.stdout.close()
-        self.procs = [sl, ff]
+        try:
+            ff = self._register_proc(subprocess.Popen(
+                cmd, stdin=sl.stdout, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, **NO_WINDOW))
+        except Exception:
+            # Streamlink já foi iniciado: encerre-o se o FFmpeg não puder abrir.
+            self._terminate_proc(sl)
+            for stream in (sl.stdout, sl.stderr):
+                try:
+                    if stream:
+                        stream.close()
+                except OSError:
+                    pass
+            raise
+        finally:
+            if sl.stdout:
+                sl.stdout.close()
 
         audio_q = queue.Queue()
 
@@ -370,24 +421,40 @@ class Worker(threading.Thread):
                     clock = dt.datetime.fromtimestamp(when).strftime("%H:%M:%S")
                     live = fmt(when - self.live_start) if self.live_start else "—"
                     out_path = ""
+                    clip_thread = None
+                    clip_rejected = False
                     if list_path:
                         stamp = dt.datetime.fromtimestamp(when).strftime("%Y%m%d_%H%M%S")
                         out_path = os.path.join(
                             CLIP_DIR, f"clipe_{stamp}_{safe_name(original)}.mp4")
-                        t = threading.Thread(
-                            target=self._clip_job,
-                            args=(hit_id, list_path, window_media + seg.start, out_path),
-                            daemon=True)
-                        t.start()
-                        self.clip_threads.append(t)
+                        # Não crie threads ilimitadas esperando o semáforo: se os
+                        # dois slots estiverem ocupados, descarte apenas este job.
+                        if self.clip_sem.acquire(blocking=False):
+                            clip_thread = threading.Thread(
+                                target=self._clip_job,
+                                args=(hit_id, list_path, window_media + seg.start, out_path),
+                                daemon=True)
+                            self.clip_threads.append(clip_thread)
+                        else:
+                            clip_rejected = True
+                    # Registre a ocorrência antes de iniciar o job: evita que um
+                    # clipe muito rápido termine antes de a linha existir na GUI.
                     self.out.put(("hit", hit_id, clock, live, original,
                                   seg.text.strip(), out_path))
+                    if clip_thread:
+                        clip_thread.start()
+                    elif clip_rejected:
+                        self.out.put(("clip", hit_id, False, out_path))
         self.out.put(("end", "Parado.", self))
 
     def _clip_job(self, hit_id, list_path, media_t, out_path):
-        with self.clip_sem:                  # limita ffmpeg simultâneos
+        try:
             ok = make_clip(self.tmp, list_path, media_t, self.pre, self.post,
                            out_path, self.stop)
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        finally:
+            self.clip_sem.release()
         self.out.put(("clip", hit_id, ok, out_path))
 
 
@@ -399,6 +466,7 @@ class App(tk.Tk if tk else object):
         self.geometry("900x600")
         self.out, self.stop_evt, self.worker = queue.Queue(), threading.Event(), None
         self.rows = {}
+        self._close_when_done = False
 
         top = ttk.Frame(self, padding=10)
         top.pack(fill="x")
@@ -511,9 +579,11 @@ class App(tk.Tk if tk else object):
         try:
             live_start = parse_start(self.start.get())
             pre, post = int(self.pre.get()), int(self.post.get())
+            if not 3 <= pre <= 45 or not 3 <= post <= 45:
+                raise ValueError("segundos fora do intervalo")
         except ValueError:
             return messagebox.showinfo(
-                "LiveCapture", "Confira os campos: horário no formato HH:MM e segundos como números.")
+                "LiveCapture", "Informe o horário como HH:MM ou HH:MM:SS e segundos entre 3 e 45.")
         self.stop_evt = threading.Event()
         self.worker = Worker(url, kws, self.model.get(), live_start, self.out,
                              self.stop_evt, self.clip_var.get(), pre, post,
@@ -522,10 +592,25 @@ class App(tk.Tk if tk else object):
         self.btn.config(text="Parar")
 
     def on_close(self):
+        if self._close_when_done:
+            return
+        self._close_when_done = True
         self.stop_evt.set()
         if self.worker and self.worker.is_alive():
             self.worker.kill()
-        self.destroy()
+            self.btn.config(state="disabled")
+            self.status.config(text="Finalizando gravações e clipes antes de fechar...")
+            self.after(200, self._finish_close)
+        else:
+            self.destroy()
+
+    def _finish_close(self):
+        # Mantém o loop Tk ativo enquanto o worker aguarda os clipes e limpa
+        # o temporário. Assim, o encerramento da janela não mata threads daemon.
+        if self.worker and self.worker.is_alive():
+            self.after(200, self._finish_close)
+        else:
+            self.destroy()
 
     def copy_time(self, _):
         sel = self.tree.selection()

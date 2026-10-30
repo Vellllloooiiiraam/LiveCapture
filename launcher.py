@@ -1,9 +1,12 @@
 """
 Ponto de entrada do LiveCapture.exe.
 
-1. Garante Python + ambiente virtual + dependencias + ffmpeg (bootstrap).
-2. Na primeira execucao mostra uma janela de progresso (sem console preto).
+1. Copia os arquivos do app para %LOCALAPPDATA%\\LiveCapture\\app.
+2. Garante Python + ambiente virtual + dependencias + ffmpeg (bootstrap).
+   Na primeira execucao mostra uma janela de progresso (sem console preto).
 3. Abre a interface grafica usando o Python do ambiente virtual.
+
+Os clipes e o ocorrencias.csv ficam em Videos\\LiveCapture (LIVECAPTURE_HOME).
 
 Flags:
     --check   so verifica o ambiente e sai
@@ -38,6 +41,11 @@ def sidecar_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def install_sidecar_ffmpeg():
+    if getattr(sys, "frozen", False):
+        B.install_bundled_ffmpeg(sidecar_dir())
+
+
 def needs_setup():
     s = B.status()
     return not (s["venv"] and s["deps"] and s["ffmpeg"])
@@ -47,7 +55,17 @@ def launch(py):
     gui = os.path.join(B.app_dir(), "livecapture_gui.py")
     pyw = os.path.join(os.path.dirname(py), "pythonw.exe")   # abre a GUI sem console
     runner = pyw if os.path.exists(pyw) else py
-    return subprocess.call([runner, gui], **B._no_window())
+
+    # O ffmpeg recem-instalado pode nao estar no PATH deste processo: passa adiante.
+    env = os.environ.copy()
+    ff = B.find_ffmpeg()
+    if ff:
+        env["PATH"] = os.path.dirname(ff) + os.pathsep + env.get("PATH", "")
+    data = B.data_dir()                       # clipes/ e ocorrencias.csv ficam aqui
+    os.makedirs(data, exist_ok=True)
+    env["LIVECAPTURE_HOME"] = data
+
+    return subprocess.call([runner, gui], env=env, cwd=data, **B._no_window())
 
 
 def setup_with_progress():
@@ -78,8 +96,7 @@ def setup_with_progress():
 
     def worker():
         try:
-            if getattr(sys, "frozen", False):
-                B.install_ffmpeg(sidecar_dir())
+            install_sidecar_ffmpeg()
             done["py"] = B.ensure_ready()
             done["ok"] = True
         except Exception as e:                    # mostra o erro em vez de sumir
@@ -113,14 +130,12 @@ def main():
     B.install_payload(bundled_dir())
 
     if "--check" in sys.argv:
-        if getattr(sys, "frozen", False):
-            B.install_ffmpeg(sidecar_dir())
+        install_sidecar_ffmpeg()
         for k, v in B.status().items():
             print(f"{k}: {'OK' if v else 'FALTA'}")
         return 0
     if "--setup" in sys.argv:
-        if getattr(sys, "frozen", False):
-            B.install_ffmpeg(sidecar_dir())
+        install_sidecar_ffmpeg()
         done = setup_with_progress() if tk is not None else {"py": B.ensure_ready()}
         if done.get("err"):
             _error(done["err"])
@@ -135,8 +150,7 @@ def main():
             return 1
         py = done["py"]
     else:
-        if getattr(sys, "frozen", False):
-            B.install_ffmpeg(sidecar_dir())
+        install_sidecar_ffmpeg()
         py = B.ensure_ready()
 
     return launch(py)

@@ -3,7 +3,7 @@ Bootstrap do LiveCapture.
 
 Garante um Python 3.11-3.13, cria um ambiente virtual isolado em
 %LOCALAPPDATA%\\LiveCapture, instala as dependencias (requirements.txt)
-e confere o ffmpeg.
+e confere/obtem o ffmpeg.
 
 Usado pelo LiveCapture.exe (launcher.py) e pelo instalar.ps1.
 
@@ -27,6 +27,12 @@ MAX_PY = (3, 13)                 # PyAV (av) ainda nao tem wheel para 3.14+; req
 PAYLOAD = ("livecapture_gui.py", "requirements.txt")
 UV_ZIP = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip"
 CHECK_IMPORTS = "import numpy, faster_whisper, streamlink, yt_dlp"
+# ffmpeg: se nao vier embutido no ZIP, baixa direto (sem winget, sem admin,
+# sem mexer no PATH). Tenta as fontes em ordem.
+FFMPEG_ZIPS = (
+    "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+)
 
 
 def log(msg):
@@ -60,6 +66,11 @@ def venv_dir():
 
 def bin_dir():
     return os.path.join(root(), "bin")
+
+
+def data_dir():
+    """Onde ficam os clipes e o ocorrencias.csv (visivel para o usuario)."""
+    return os.path.join(os.path.expanduser("~"), "Videos", APP)
 
 
 # --------------------------------------------------------------- descoberta
@@ -186,9 +197,13 @@ def ensure_deps(vp, req):
 
 
 def find_ffmpeg():
+    """ffmpeg embutido (pasta do app) > baixado (bin) > PATH > winget."""
     bundled = os.path.join(app_dir(), "ffmpeg.exe")
     if os.path.exists(bundled):
         return bundled
+    own = os.path.join(bin_dir(), "ffmpeg.exe")
+    if os.path.exists(own):
+        return own
     p = shutil.which("ffmpeg")
     if p:
         return p
@@ -198,6 +213,38 @@ def find_ffmpeg():
     base = os.path.join(_local_appdata(), "Microsoft", "WinGet", "Packages")
     found = glob.glob(os.path.join(base, "*FFmpeg*", "**", "ffmpeg.exe"), recursive=True)
     return found[0] if found else None
+
+
+def install_bundled_ffmpeg(src):
+    """Copia ffmpeg.exe/ffprobe.exe que vierem junto do exe (ZIP) para a pasta do app."""
+    os.makedirs(app_dir(), exist_ok=True)
+    for name in ("ffmpeg.exe", "ffprobe.exe"):
+        s = os.path.join(src, name)
+        if os.path.exists(s) and os.path.abspath(s) != os.path.join(app_dir(), name):
+            shutil.copy2(s, os.path.join(app_dir(), name))
+
+
+def download_ffmpeg():
+    """Baixa um build do ffmpeg e copia ffmpeg.exe/ffprobe.exe para a pasta bin."""
+    os.makedirs(bin_dir(), exist_ok=True)
+    for url in FFMPEG_ZIPS:
+        try:
+            log("Baixando o ffmpeg (80-150 MB, so na 1a vez)...")
+            with tempfile.TemporaryDirectory() as td:
+                z = os.path.join(td, "ffmpeg.zip")
+                urllib.request.urlretrieve(url, z)
+                with zipfile.ZipFile(z) as zf:
+                    zf.extractall(td)
+                for dirpath, _dirs, files in os.walk(td):
+                    if "ffmpeg.exe" in files:
+                        for name in ("ffmpeg.exe", "ffprobe.exe"):
+                            if name in files:
+                                shutil.copy2(os.path.join(dirpath, name),
+                                             os.path.join(bin_dir(), name))
+                        return os.path.join(bin_dir(), "ffmpeg.exe")
+        except Exception as e:
+            log(f"Falhou ({e}); tentando outra fonte...")
+    return None
 
 
 def _add_user_path(d):
@@ -213,7 +260,10 @@ def ensure_ffmpeg():
     p = find_ffmpeg()
     if p:
         return p
-    if shutil.which("winget"):
+    p = download_ffmpeg()
+    if p:
+        return p
+    if shutil.which("winget"):             # plano B
         log("Instalando ffmpeg via winget...")
         subprocess.run(["winget", "install", "--id", "Gyan.FFmpeg", "-e",
                         "--accept-source-agreements", "--accept-package-agreements"],
@@ -234,15 +284,6 @@ def install_payload(src):
         if os.path.exists(s):
             shutil.copy2(s, os.path.join(app_dir(), name))
     return app_dir()
-
-
-def install_ffmpeg(src):
-    """Copia ffmpeg.exe/ffprobe.exe que vierem junto do exe (ZIP) para a pasta do app."""
-    os.makedirs(app_dir(), exist_ok=True)
-    for name in ("ffmpeg.exe", "ffprobe.exe"):
-        s = os.path.join(src, name)
-        if os.path.exists(s) and os.path.abspath(s) != os.path.join(app_dir(), name):
-            shutil.copy2(s, os.path.join(app_dir(), name))
 
 
 def ensure_ready():

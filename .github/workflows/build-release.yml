@@ -29,6 +29,10 @@ jobs:
           --add-data "requirements.txt;."
           launcher.py
 
+      - name: Testar que o exe abre (smoke)
+        shell: pwsh
+        run: Start-Process -FilePath ".\dist\LiveCapture.exe" -ArgumentList "--check" -Wait
+
       - name: Baixar o ffmpeg (embutido no ZIP)
         shell: pwsh
         run: |

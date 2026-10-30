@@ -150,6 +150,66 @@ class TestBuffer(unittest.TestCase):
                                      threading.Event()))
 
 
+# ------------------------------------------- stop, fallback de GPU, find_tool
+class TestRobustez(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="lctest2_")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @unittest.skipUnless(HAVE_FFMPEG and HAVE_FFPROBE, "ffmpeg/ffprobe nao instalados")
+    def test_make_clip_ainda_corta_depois_de_parar(self):
+        list_path = _make_segments(self.tmp, n=6)
+        out = os.path.join(self.tmp, "out", "clipe_stop.mp4")
+        stop = threading.Event()
+        stop.set()                               # usuario ja clicou em Parar
+        ok = L.make_clip(self.tmp, list_path, media_t=6, pre=3, post=3,
+                         out_path=out, stop=stop)
+        self.assertTrue(ok and os.path.exists(out))
+
+    def test_transcribe_cai_para_cpu_quando_gpu_falha(self):
+        class Seg:
+            text = "ok"; start = 0.0
+
+        class GpuQuebrada:
+            def transcribe(self, audio, **kw):
+                def gen():
+                    raise RuntimeError("Library cublas64_12.dll is not found")
+                    yield
+                return gen(), None
+
+        class Cpu:
+            def transcribe(self, audio, **kw):
+                return iter([Seg()]), None
+
+        w = L.Worker("http://x", ["a"], "tiny", None, queue.Queue(),
+                     threading.Event(), False, 3, 3)
+        w.model = GpuQuebrada()
+        w._load_model = lambda device="auto": Cpu()
+        segs = w._transcribe(b"")
+        self.assertEqual([s.text for s in segs], ["ok"])
+        self.assertTrue(w.on_cpu)
+
+    def test_worker_idioma_auto_vira_none(self):
+        w = L.Worker("http://x", ["a"], "tiny", None, queue.Queue(),
+                     threading.Event(), False, 3, 3, lang="auto")
+        self.assertIsNone(w.lang)
+        w2 = L.Worker("http://x", ["a"], "tiny", None, queue.Queue(),
+                      threading.Event(), False, 3, 3)
+        self.assertEqual(w2.lang, "pt")
+
+    def test_find_tool_acha_na_pasta_extra(self):
+        fake = os.path.join(self.tmp, "ferramenta_falsa_lc.exe")
+        open(fake, "wb").close()
+        old = L._extra_tool_dirs
+        L._extra_tool_dirs = lambda: [self.tmp]
+        try:
+            self.assertEqual(L.find_tool("ferramenta_falsa_lc"), fake)
+        finally:
+            L._extra_tool_dirs = old
+
+
 # --------------------------------------------------------------- whisper
 class TestWhisper(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("LC_SLOW") == "1",

@@ -41,6 +41,27 @@ def sidecar_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _clean_child_env(env):
+    """Remove variaveis que o PyInstaller injeta e que quebram o Python do venv.
+
+    O exe congela o Tcl/Tk e exporta TCL_LIBRARY/TK_LIBRARY apontando para o
+    Tcl dele; o python do venv herda isso, o tkinter dele acha o Tcl errado e
+    o programa fecha com erro de versao do Tcl. Removemos essas variaveis (e as
+    _PYI_*, alem do PATH) para o filho usar o proprio ambiente.
+    """
+    for key in list(env):
+        up = key.upper()
+        if up.startswith("_PYI") or up in ("_MEIPASS2", "TCL_LIBRARY", "TK_LIBRARY", "TCL", "TK"):
+            env.pop(key, None)
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        mp = os.path.abspath(meipass)
+        parts = [p for p in env.get("PATH", "").split(os.pathsep)
+                 if p and os.path.abspath(p) != mp]
+        env["PATH"] = os.pathsep.join(parts)
+    return env
+
+
 def install_sidecar_ffmpeg():
     if getattr(sys, "frozen", False):
         B.install_bundled_ffmpeg(sidecar_dir())
@@ -56,8 +77,8 @@ def launch(py):
     pyw = os.path.join(os.path.dirname(py), "pythonw.exe")   # abre a GUI sem console
     runner = pyw if os.path.exists(pyw) else py
 
+    env = _clean_child_env(os.environ.copy())
     # O ffmpeg recem-instalado pode nao estar no PATH deste processo: passa adiante.
-    env = os.environ.copy()
     ff = B.find_ffmpeg()
     if ff:
         env["PATH"] = os.path.dirname(ff) + os.pathsep + env.get("PATH", "")

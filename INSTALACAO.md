@@ -17,7 +17,8 @@ primeira vez.
    Ela baixa Python, as dependências e já vem com o `ffmpeg.exe` na pasta.
    Isso demora alguns minutos e **precisa de internet**.
 6. Quando a janela principal abrir, cole o link da live, escreva as
-   palavras-chave, marque **Salvar clipe** e clique em **Iniciar**.
+   palavras-chave, escolha o **idioma da fala** do streamer (ou `auto`), marque
+   **Salvar clipe** e clique em **Iniciar**.
 
 Pronto. A pasta `LiveCapture.zip` extraída pode ficar onde você quiser.
 
@@ -55,8 +56,9 @@ Se você baixou o repositório (código-fonte) em vez do ZIP:
 
 - **Programa e ambiente:** `%LOCALAPPDATA%\LiveCapture`
   (contém `app\`, `venv\` e o `ffmpeg.exe`).
-- **Clipes e registro:** na pasta onde o programa está rodando — `clipes\` e
-  `ocorrencias.csv`.
+- **Clipes e registro:** `Vídeos\LiveCapture` — `clipes\` e `ocorrencias.csv`
+  (use o botão **Abrir pasta de clipes**). Quando rodado direto pelo
+  código-fonte, ficam na pasta atual do projeto.
 
 ## Problemas comuns
 
@@ -81,12 +83,18 @@ LiveCapture.exe --setup
 
 **Deu erro durante a captura da live.**
 Confira se o `streamlink` consegue ver o canal (o programa usa ele por baixo).
-Lives privadas ou que exigem login podem falhar.
+Lives privadas ou que exigem login podem falhar. Quando a live cai, o motivo
+aparece entre parênteses no fim da mensagem.
+
+**A imagem/transcrição trava e demora.**
+Se aparecer o aviso *"o PC está atrasado"*, escolha um modelo menor (`base` ou
+`tiny`). Se a placa NVIDIA não tiver CUDA, o programa usa o processador
+automaticamente — a transcrição fica mais lenta.
 
 ## Requisitos
 
 - Windows 10/11.
 - Internet na **primeira** execução (dependências) e na **primeira live**
   (modelo de transcrição).
-- `ffmpeg` já vem no ZIP. Se você rodou pelo código-fonte e não tiver, o
-  instalador tenta instalar via `winget install Gyan.FFmpeg`.
+- `ffmpeg` já vem no ZIP. Se você rodou pelo código-fonte e não tiver nenhum, o
+  instalador **baixa um build automaticamente** (o `winget` fica como plano B).

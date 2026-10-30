@@ -14,6 +14,14 @@ apagando o que fica velho. Quando uma palavra aparece, ele junta os pedaços do
 buffer ao redor daquele momento e salva um MP4 em `clipes/`. Ao parar, a pasta
 temporária é apagada — só os clipes (e o `ocorrencias.csv`) permanecem.
 
+## Onde ficam os arquivos
+
+- **Programa e dependências:** `%LOCALAPPDATA%\LiveCapture` (`app\`, `venv\` e o
+  `ffmpeg.exe`). Para desinstalar, apague essa pasta.
+- **Clipes e registro:** `Vídeos\LiveCapture` (`clipes\` e `ocorrencias.csv`).
+  Use o botão **Abrir pasta de clipes**. Quando rodado direto pelo código-fonte,
+  ficam na pasta atual do projeto.
+
 ## Instalação
 
 O jeito mais fácil: baixe o **`LiveCapture.zip`** em
@@ -37,15 +45,23 @@ Atalhos do exe: `LiveCapture.exe --check` (só verifica) e `LiveCapture.exe --se
 1. Cole o link da live.
 2. Digite as palavras-chave (uma por linha).
 3. (Opcional) Informe o início da live em `HH:MM` ou clique em **Detectar**.
-4. Marque **Salvar clipe** e ajuste os segundos antes/depois.
+4. Escolha o **idioma da fala** do streamer (ou `auto`), marque **Salvar clipe**
+   e ajuste os segundos antes/depois.
 5. Clique em **Iniciar**. Dois cliques numa linha copiam o tempo da live.
+
+Dicas durante o uso: se a placa NVIDIA não tiver CUDA, o programa **cai sozinho
+para o processador**; se a transcrição não acompanhar a live, aparece o aviso
+*"o PC está atrasado"* (use um modelo menor); e se a live cair, o motivo do
+`streamlink` aparece no fim da mensagem.
 
 ## Requisitos
 
 - Windows.
 - Python 3.11–3.13 (o instalador resolve isso; no 3.14+ o PyAV ainda não tem
   wheel).
-- `ffmpeg` no PATH (o instalador tenta instalar via `winget`).
+- `ffmpeg`: o ZIP das releases **já inclui** o `ffmpeg.exe`. Pelo código-fonte, se
+  não houver nenhum no sistema, o instalador **baixa um build** automaticamente
+  (e o `winget` fica só como plano B).
 
 Arquivo `requirements.txt`: `numpy`, `faster-whisper`, `streamlink`, `yt-dlp` e
 `av>=11,<19` (a versão 19 do PyAV removeu um parâmetro usado pelo faster-whisper).
@@ -58,8 +74,9 @@ Arquivo `requirements.txt`: `numpy`, `faster-whisper`, `streamlink`, `yt-dlp` e
 - **Falso positivo de antivírus:** executáveis feitos com PyInstaller costumam
   ser sinalizados por antivírus/Windows Defender. É esperado e **não** indica
   vírus. Libere o arquivo nas exceções ou clique em *Executar mesmo assim*.
-- **ffmpeg:** o ZIP das releases inclui `ffmpeg.exe`. O ffmpeg é um projeto
-  separado (LGPL/GPL) — veja <https://ffmpeg.org/legal.html>.
+- **ffmpeg:** o ZIP das releases inclui `ffmpeg.exe`; pelo código-fonte o
+  instalador baixa um build se faltar. O ffmpeg é um projeto separado
+  (LGPL/GPL) — veja <https://ffmpeg.org/legal.html>.
 
 ## Testes
 

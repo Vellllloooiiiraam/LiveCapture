@@ -36,16 +36,12 @@ jobs:
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_dl
           $bin = Get-ChildItem ffmpeg_dl -Recurse -Filter ffmpeg.exe | Select-Object -First 1
           Copy-Item $bin.FullName dist\ffmpeg.exe
-          $probe = Get-ChildItem ffmpeg_dl -Recurse -Filter ffprobe.exe | Select-Object -First 1
-          if ($probe) { Copy-Item $probe.FullName dist\ffprobe.exe }
 
       - name: Empacotar o ZIP
         shell: pwsh
         run: |
           Copy-Item INSTALACAO.md dist\LEIA-ME.md
-          $items = @("dist\LiveCapture.exe", "dist\ffmpeg.exe", "dist\LEIA-ME.md")
-          if (Test-Path dist\ffprobe.exe) { $items += "dist\ffprobe.exe" }
-          Compress-Archive -Path $items -DestinationPath dist\LiveCapture.zip -Force
+          Compress-Archive -Path "dist\LiveCapture.exe", "dist\ffmpeg.exe", "dist\LEIA-ME.md" -DestinationPath dist\LiveCapture.zip -Force
           Get-ChildItem dist | Select-Object Name, Length
 
       - name: Guardar o ZIP como artefato

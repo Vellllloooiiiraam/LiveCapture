@@ -58,8 +58,8 @@ Arquivo `requirements.txt`: `numpy`, `faster-whisper`, `streamlink`, `yt-dlp` e
 - **Falso positivo de antivírus:** executáveis feitos com PyInstaller costumam
   ser sinalizados por antivírus/Windows Defender. É esperado e **não** indica
   vírus. Libere o arquivo nas exceções ou clique em *Executar mesmo assim*.
-- **ffmpeg:** o ZIP das releases inclui `ffmpeg.exe`/`ffprobe.exe`. O ffmpeg é um
-  projeto separado (LGPL/GPL) — veja <https://ffmpeg.org/legal.html>.
+- **ffmpeg:** o ZIP das releases inclui `ffmpeg.exe`. O ffmpeg é um projeto
+  separado (LGPL/GPL) — veja <https://ffmpeg.org/legal.html>.
 
 ## Testes
 

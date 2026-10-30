@@ -47,16 +47,26 @@ CLIP_DIR = "clipes"
 
 
 # ---------------------------------------------------------------- utilidades
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # subprocess.CREATE_NO_WINDOW
+
+
+def no_window():
+    """Evita que janelas pretas de console pisquem ao chamar programas externos."""
+    return {"creationflags": _NO_WINDOW} if _NO_WINDOW else {}
+
+
 def find_tool(name):
-    """Localiza um executável no PATH ou na pasta do interpretador (venv/Scripts)."""
+    """Localiza um executável no PATH, na pasta do app ou na do interpretador."""
     exe = shutil.which(name)
     if exe:
         return exe
-    scripts = os.path.dirname(sys.executable)
-    for cand in (name, name + ".exe"):
-        path = os.path.join(scripts, cand)
-        if os.path.exists(path):
-            return path
+    here = os.path.dirname(os.path.abspath(__file__))
+    dirs = (here, os.path.join(here, "bin"), os.path.dirname(sys.executable))
+    for d in dirs:
+        for cand in (name, name + ".exe"):
+            path = os.path.join(d, cand)
+            if os.path.exists(path):
+                return path
     return name                      # deixa o erro do sistema aparecer se faltar
 
 
@@ -98,7 +108,7 @@ def detect_start(url):
         out = subprocess.run(
             [find_tool("yt-dlp"), "--skip-download", "--no-warnings",
              "--print", "%(release_timestamp)s|%(timestamp)s", url],
-            capture_output=True, text=True, timeout=40,
+            capture_output=True, text=True, timeout=40, **no_window(),
         ).stdout.strip().splitlines()[-1]
         for value in out.split("|"):
             if value.isdigit():
@@ -166,13 +176,13 @@ def make_clip(tmp_dir, list_path, media_t, pre, post, out_path, stop):
         res = subprocess.run(
             common + ["-c", "copy", "-avoid_negative_ts", "make_zero",
                       "-movflags", "+faststart", out_path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **no_window())
         ok = res.returncode == 0 and os.path.exists(out_path)
         if not ok:                       # -c copy falhou: recodifica para não perder o clipe
             res = subprocess.run(
                 common + ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
                           "-movflags", "+faststart", out_path],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **no_window())
             ok = res.returncode == 0 and os.path.exists(out_path)
         return ok
     finally:
@@ -223,7 +233,7 @@ class Worker(threading.Thread):
         quality = VIDEO_QUALITY if self.clip_on else AUDIO_QUALITY
         sl = subprocess.Popen(
             [find_tool("streamlink"), self.url, quality, "--stdout", "--loglevel", "error"],
-            stdout=subprocess.PIPE)
+            stdout=subprocess.PIPE, **no_window())
 
         cmd = [find_tool("ffmpeg"), "-loglevel", "error", "-i", "pipe:0",
                "-map", "0:a:0", "-f", "s16le", "-ac", "1", "-ar", str(SAMPLE_RATE), "pipe:1"]
@@ -238,7 +248,7 @@ class Worker(threading.Thread):
                     "-segment_list_flags", "+live",
                     os.path.join(self.tmp, "seg_%06d.ts")]
         ff = subprocess.Popen(cmd, stdin=sl.stdout, stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL)
+                              stderr=subprocess.DEVNULL, **no_window())
         sl.stdout.close()
         self.procs = [sl, ff]
 

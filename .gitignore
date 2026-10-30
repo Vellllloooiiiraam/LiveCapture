@@ -14,6 +14,9 @@ ocorrencias.csv
 *.mp4
 *.ts
 
+# Empacotamento
+*.zip
+
 # Temporarios
 *.log
 .bak

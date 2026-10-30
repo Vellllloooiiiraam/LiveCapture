@@ -16,27 +16,46 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.11"
 
       - name: Instalar PyInstaller
         run: python -m pip install --upgrade pip pyinstaller
 
-      - name: Compilar o exe
+      - name: Compilar o exe (sem console)
         run: >
-          python -m PyInstaller --noconfirm --clean --onefile --console
+          python -m PyInstaller --noconfirm --clean --onefile --windowed
           --name LiveCapture
           --add-data "livecapture_gui.py;."
           --add-data "requirements.txt;."
           launcher.py
 
-      - name: Guardar o exe como artefato
+      - name: Baixar o ffmpeg (embutido no ZIP)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_dl
+          $bin = Get-ChildItem ffmpeg_dl -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          Copy-Item $bin.FullName dist\ffmpeg.exe
+          $probe = Get-ChildItem ffmpeg_dl -Recurse -Filter ffprobe.exe | Select-Object -First 1
+          if ($probe) { Copy-Item $probe.FullName dist\ffprobe.exe }
+
+      - name: Empacotar o ZIP
+        shell: pwsh
+        run: |
+          Copy-Item INSTALACAO.md dist\LEIA-ME.md
+          $items = @("dist\LiveCapture.exe", "dist\ffmpeg.exe", "dist\LEIA-ME.md")
+          if (Test-Path dist\ffprobe.exe) { $items += "dist\ffprobe.exe" }
+          Compress-Archive -Path $items -DestinationPath dist\LiveCapture.zip -Force
+          Get-ChildItem dist | Select-Object Name, Length
+
+      - name: Guardar o ZIP como artefato
         uses: actions/upload-artifact@v4
         with:
-          name: LiveCapture-exe
-          path: dist/LiveCapture.exe
+          name: LiveCapture-zip
+          path: dist/LiveCapture.zip
 
       - name: Anexar na release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/LiveCapture.exe
+          files: dist/LiveCapture.zip

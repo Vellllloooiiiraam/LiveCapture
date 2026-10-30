@@ -25,7 +25,7 @@ Write-Host "Instalando PyInstaller..."
 
 Push-Location $proj
 try {
-    & $vpy -m PyInstaller --noconfirm --clean --onefile --console --name LiveCapture `
+    & $vpy -m PyInstaller --noconfirm --clean --onefile --windowed --name LiveCapture `
         --add-data "$proj\livecapture_gui.py;." --add-data "$proj\requirements.txt;." `
         --distpath "$proj\dist" --workpath "$proj\build" --specpath "$proj\build" `
         "$proj\launcher.py"

@@ -33,6 +33,14 @@ def log(msg):
     print(f"[{APP}] {msg}", flush=True)
 
 
+_CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+
+def _no_window():
+    """Evita janelas pretas de console ao chamar programas externos no Windows."""
+    return {"creationflags": _CREATE_NO_WINDOW} if _CREATE_NO_WINDOW else {}
+
+
 # ------------------------------------------------------------------- caminhos
 def _local_appdata():
     return os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
@@ -59,7 +67,7 @@ def _py_version(exe):
     try:
         r = subprocess.run([exe, "-c", "import sys;print('%d.%d' % sys.version_info[:2])"],
                            capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=30)
+                           errors="replace", timeout=30, **_no_window())
         if r.returncode != 0:
             return None
         a, b = r.stdout.strip().split(".")
@@ -84,9 +92,9 @@ def _venv_python(vd=None):
 
 def _uv_python(uv, ver):
     try:
-        subprocess.run([uv, "python", "install", ver], check=False, timeout=900)
+        subprocess.run([uv, "python", "install", ver], check=False, timeout=900, **_no_window())
         r = subprocess.run([uv, "python", "find", ver], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=60)
+                           encoding="utf-8", errors="replace", timeout=60, **_no_window())
         exe = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
         if exe and os.path.exists(exe) and _ok(_py_version(exe)):
             return exe
@@ -102,7 +110,7 @@ def find_base_python():
             try:
                 r = subprocess.run(["py", "-" + v, "-c", "import sys;print(sys.executable)"],
                                    capture_output=True, text=True, encoding="utf-8",
-                                   errors="replace", timeout=30)
+                                   errors="replace", timeout=30, **_no_window())
                 exe = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
                 if exe and os.path.exists(exe) and _ok(_py_version(exe)):
                     return exe
@@ -161,7 +169,7 @@ def ensure_venv(base):
     if os.path.isdir(venv_dir()):
         shutil.rmtree(venv_dir(), ignore_errors=True)
     log("Criando ambiente virtual...")
-    subprocess.run([base, "-m", "venv", venv_dir()], check=True)
+    subprocess.run([base, "-m", "venv", venv_dir()], check=True, **_no_window())
     vp = _venv_python()
     if not vp:
         raise RuntimeError("Falha ao criar o ambiente virtual.")
@@ -170,14 +178,17 @@ def ensure_venv(base):
 
 def ensure_deps(vp, req):
     if subprocess.run([vp, "-c", CHECK_IMPORTS], capture_output=True, text=True,
-                      encoding="utf-8", errors="replace").returncode == 0:
+                      encoding="utf-8", errors="replace", **_no_window()).returncode == 0:
         return
     log("Instalando dependencias (pode demorar bastante na primeira vez)...")
-    subprocess.run([vp, "-m", "pip", "install", "--upgrade", "pip"], check=False)
-    subprocess.run([vp, "-m", "pip", "install", "-r", req], check=True)
+    subprocess.run([vp, "-m", "pip", "install", "--upgrade", "pip"], check=False, **_no_window())
+    subprocess.run([vp, "-m", "pip", "install", "-r", req], check=True, **_no_window())
 
 
 def find_ffmpeg():
+    bundled = os.path.join(app_dir(), "ffmpeg.exe")
+    if os.path.exists(bundled):
+        return bundled
     p = shutil.which("ffmpeg")
     if p:
         return p
@@ -193,7 +204,7 @@ def _add_user_path(d):
     try:
         ps = (f"$p=[Environment]::GetEnvironmentVariable('Path','User');"
               f"if($p -notlike '*{d}*'){{[Environment]::SetEnvironmentVariable('Path',$p+';{d}','User')}}")
-        subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True)
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, **_no_window())
     except Exception:
         pass
 
@@ -205,7 +216,8 @@ def ensure_ffmpeg():
     if shutil.which("winget"):
         log("Instalando ffmpeg via winget...")
         subprocess.run(["winget", "install", "--id", "Gyan.FFmpeg", "-e",
-                        "--accept-source-agreements", "--accept-package-agreements"], check=False)
+                        "--accept-source-agreements", "--accept-package-agreements"],
+                       check=False, **_no_window())
         p = find_ffmpeg()
         if p:
             _add_user_path(os.path.dirname(p))
@@ -224,6 +236,15 @@ def install_payload(src):
     return app_dir()
 
 
+def install_ffmpeg(src):
+    """Copia ffmpeg.exe/ffprobe.exe que vierem junto do exe (ZIP) para a pasta do app."""
+    os.makedirs(app_dir(), exist_ok=True)
+    for name in ("ffmpeg.exe", "ffprobe.exe"):
+        s = os.path.join(src, name)
+        if os.path.exists(s) and os.path.abspath(s) != os.path.join(app_dir(), name):
+            shutil.copy2(s, os.path.join(app_dir(), name))
+
+
 def ensure_ready():
     base = ensure_base_python()
     log(f"Python base: {base}")
@@ -239,7 +260,7 @@ def status():
     vp = _venv_python()
     deps = bool(vp) and subprocess.run(
         [vp, "-c", CHECK_IMPORTS], capture_output=True, text=True,
-        encoding="utf-8", errors="replace").returncode == 0
+        encoding="utf-8", errors="replace", **_no_window()).returncode == 0
     return {"base_python": bool(find_base_python()), "venv": bool(vp),
             "deps": deps, "ffmpeg": bool(find_ffmpeg())}
 

@@ -1,5 +1,7 @@
 # LiveCapture
 
+**Versão do código-fonte: 1.2.2** — veja [CHANGELOG-1.2.2.md](CHANGELOG-1.2.2.md) para as correções.
+
 Detecta palavras-chave na **voz** de uma live (YouTube, Twitch, Kick) e salva um
 clipe MP4 com alguns segundos **antes e depois** da palavra. Tem uma interface
 gráfica simples e mostra uma tabela com cada ocorrência (tempo da live, relógio,
@@ -11,8 +13,10 @@ palavra, frase) e o clipe gerado.
 
 O programa mantém só os últimos ~2,5 minutos da live numa pasta temporária,
 apagando o que fica velho. Quando uma palavra aparece, ele junta os pedaços do
-buffer ao redor daquele momento e salva um MP4 em `clipes/`. Ao parar, a pasta
-temporária é apagada — só os clipes (e o `ocorrencias.csv`) permanecem.
+buffer ao redor daquele momento e salva um MP4 em `clipes/`. Ao parar, aguarda
+a finalização dos clipes em andamento antes de apagar a pasta temporária — só os
+clipes (e o `ocorrencias.csv`) permanecem. São processados no máximo dois clipes
+ao mesmo tempo para controlar o uso de recursos.
 
 ## Onde ficam os arquivos
 

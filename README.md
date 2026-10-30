@@ -5,6 +5,8 @@ clipe MP4 com alguns segundos **antes e depois** da palavra. Tem uma interface
 gráfica simples e mostra uma tabela com cada ocorrência (tempo da live, relógio,
 palavra, frase) e o clipe gerado.
 
+> Guia de instalação passo a passo: **[INSTALACAO.md](INSTALACAO.md)**.
+
 ## Como funciona
 
 O programa mantém só os últimos ~2,5 minutos da live numa pasta temporária,
@@ -14,30 +16,21 @@ temporária é apagada — só os clipes (e o `ocorrencias.csv`) permanecem.
 
 ## Instalação
 
-Precisa de internet na primeira vez (baixa o Python, os pacotes e o ffmpeg).
+O jeito mais fácil: baixe o **`LiveCapture.zip`** em
+<https://github.com/Vellllloooiiiraam/LiveCapture/releases/latest>, extraia (não
+rode de dentro do ZIP) e dê duplo clique em `LiveCapture.exe`. O ZIP **já inclui
+o `ffmpeg.exe`**; na primeira execução o programa baixa o Python e as
+dependências. Veja o passo a passo em [INSTALACAO.md](INSTALACAO.md).
 
-### Opção 1: instalador
-
-```powershell
-powershell -ExecutionPolicy Bypass -File instalar.ps1
-```
-
-Cria o ambiente em `%LOCALAPPDATA%\LiveCapture`, instala as dependências,
-confere/instala o ffmpeg e cria um atalho na Área de Trabalho.
-(ou dê duplo clique em `instalar.bat`)
-
-### Opção 2: executável
-
-Gere o `LiveCapture.exe`:
+### A partir do código-fonte
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build_exe.ps1
-# gera dist\LiveCapture.exe
+powershell -ExecutionPolicy Bypass -File instalar.ps1    # instala e cria atalho
+powershell -ExecutionPolicy Bypass -File build_exe.ps1   # gera dist\LiveCapture.exe
 ```
 
-O exe é leve: na primeira execução ele baixa as dependências e depois abre a
-interface. Atalhos úteis: `LiveCapture.exe --check` (só verifica) e
-`LiveCapture.exe --setup` (só instala/atualiza).
+Atalhos do exe: `LiveCapture.exe --check` (só verifica) e `LiveCapture.exe --setup`
+(só instala/atualiza).
 
 ## Uso
 
@@ -57,6 +50,17 @@ interface. Atalhos úteis: `LiveCapture.exe --check` (só verifica) e
 Arquivo `requirements.txt`: `numpy`, `faster-whisper`, `streamlink`, `yt-dlp` e
 `av>=11,<19` (a versão 19 do PyAV removeu um parâmetro usado pelo faster-whisper).
 
+## Avisos
+
+- **Download do modelo:** o modelo de transcrição **não** vem no download. Ele é
+  baixado na primeira live (`tiny` ~75 MB, `base` ~140 MB, `small` ~500 MB), ou
+  seja, a primeira live também precisa de internet. Depois fica em cache.
+- **Falso positivo de antivírus:** executáveis feitos com PyInstaller costumam
+  ser sinalizados por antivírus/Windows Defender. É esperado e **não** indica
+  vírus. Libere o arquivo nas exceções ou clique em *Executar mesmo assim*.
+- **ffmpeg:** o ZIP das releases inclui `ffmpeg.exe`/`ffprobe.exe`. O ffmpeg é um
+  projeto separado (LGPL/GPL) — veja <https://ffmpeg.org/legal.html>.
+
 ## Testes
 
 ```powershell
@@ -72,10 +76,17 @@ $env:LC_LIVE_URL="https://www.twitch.tv/algumcanal"; & $venv test_livecapture.py
 gera `dist\LiveCapture.exe` empacotando `launcher.py`, `bootstrap.py`,
 `livecapture_gui.py` e `requirements.txt`.
 
+O workflow `.github/workflows/build-release.yml` (Python 3.11, `windows-latest`)
+faz o mesmo no GitHub ao enviar uma tag `v*`: compila o exe, **baixa o ffmpeg** e
+publica um **`LiveCapture.zip`** com `LiveCapture.exe` + `ffmpeg.exe` +
+`LEIA-ME.md` na release.
+
 ## Estrutura
 
 - `livecapture_gui.py` — programa e interface.
 - `launcher.py` / `bootstrap.py` — entrada do exe e instalação das dependências.
 - `instalar.ps1` / `instalar.bat` — instalador.
 - `build_exe.ps1` — build do executável.
+- `.github/workflows/build-release.yml` — build e release automáticos.
+- `INSTALACAO.md` — tutorial de instalação.
 - `test_livecapture.py` — testes.

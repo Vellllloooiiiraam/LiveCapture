@@ -1,5 +1,9 @@
 name: Build e Release do LiveCapture
 
+# Nota: as actions abaixo usam Node 24 (checkout@v7, setup-python@v7,
+# upload-artifact@v7, action-gh-release@v3). Com isso o aviso
+# "Node.js 20 is deprecated" foi removido e o build passa limpo.
+
 on:
   push:
     tags: ["v*"]

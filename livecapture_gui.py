@@ -499,19 +499,32 @@ class App(tk.Tk if tk else object):
         self.lang.set("pt")
         self.lang.pack(anchor="w")
 
-        opts = ttk.Frame(self, padding=(10, 0))
-        opts.pack(fill="x")
+        opts = ttk.LabelFrame(self, text="Clipe", padding=(10, 6))
+        opts.pack(fill="x", padx=10, pady=(4, 0))
         self.clip_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(opts, text="Salvar clipe", variable=self.clip_var).pack(side="left")
-        ttk.Label(opts, text="  Segundos antes:").pack(side="left")
-        self.pre = ttk.Spinbox(opts, from_=3, to=45, width=4)
+        row_mode = ttk.Frame(opts)
+        row_mode.pack(fill="x")
+        ttk.Label(row_mode, text="Baixar clipe (vídeo MP4):").pack(side="left")
+        ttk.Radiobutton(row_mode, text="Sim", value=True,
+                        variable=self.clip_var).pack(side="left", padx=(8, 4))
+        ttk.Radiobutton(row_mode, text="Não", value=False,
+                        variable=self.clip_var).pack(side="left")
+        ttk.Label(opts, foreground="#555555", wraplength=820, justify="left",
+                  text="Não = registra só o tempo da live, a frase e o relógio "
+                       "(sem clipe e sem áudio gravado)."
+                  ).pack(anchor="w", pady=(2, 4))
+        row_sec = ttk.Frame(opts)
+        row_sec.pack(fill="x")
+        ttk.Label(row_sec, text="Segundos antes:").pack(side="left")
+        self.pre = ttk.Spinbox(row_sec, from_=3, to=45, width=4)
         self.pre.set(10)
         self.pre.pack(side="left")
-        ttk.Label(opts, text="  depois:").pack(side="left")
-        self.post = ttk.Spinbox(opts, from_=3, to=45, width=4)
+        ttk.Label(row_sec, text="  depois:").pack(side="left")
+        self.post = ttk.Spinbox(row_sec, from_=3, to=45, width=4)
         self.post.set(5)
         self.post.pack(side="left")
-        ttk.Button(opts, text="Abrir pasta de clipes", command=self.open_folder).pack(side="left", padx=12)
+        ttk.Button(row_sec, text="Abrir pasta de clipes",
+                   command=self.open_folder).pack(side="left", padx=12)
 
         btns = ttk.Frame(self, padding=(10, 8))
         btns.pack(fill="x")

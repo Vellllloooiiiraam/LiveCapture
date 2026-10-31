@@ -1,6 +1,6 @@
 # LiveCapture
 
-**Versão do código-fonte: 1.2.2** — veja [CHANGELOG-1.2.2.md](CHANGELOG-1.2.2.md) para as correções.
+**Versão do código-fonte: 1.2.3** — veja [CHANGELOG-1.2.3.md](CHANGELOG-1.2.3.md) para as novidades.
 
 Detecta palavras-chave na **voz** de uma live (YouTube, Twitch, Kick) e salva um
 clipe MP4 com alguns segundos **antes e depois** da palavra. Tem uma interface
@@ -49,8 +49,10 @@ Atalhos do exe: `LiveCapture.exe --check` (só verifica) e `LiveCapture.exe --se
 1. Cole o link da live.
 2. Digite as palavras-chave (uma por linha).
 3. (Opcional) Informe o início da live em `HH:MM` ou clique em **Detectar**.
-4. Escolha o **idioma da fala** do streamer (ou `auto`), marque **Salvar clipe**
-   e ajuste os segundos antes/depois.
+4. Escolha o **idioma da fala** do streamer (ou `auto`), escolha **Baixar clipe**
+   (**Sim**/**Não**) e ajuste os segundos antes/depois. Em **Não**, o programa
+   registra só o tempo da live, a frase e o relógio (sem clipe e sem áudio
+   gravado).
 5. Clique em **Iniciar**. Dois cliques numa linha copiam o tempo da live.
 
 Dicas durante o uso: se a placa NVIDIA não tiver CUDA, o programa **cai sozinho

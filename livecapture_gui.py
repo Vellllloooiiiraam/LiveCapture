@@ -1,19 +1,26 @@
 """
-LiveCapture (interface gráfica) - detecta palavras-chave na VOZ do streamer
-em lives ao vivo (YouTube, Twitch, Kick) e salva um clipe com alguns segundos
-ANTES e DEPOIS da palavra.
+LiveCapture (interface gráfica) - monitora VÁRIAS lives ao mesmo tempo
+(YouTube, Twitch, Kick), cada uma em sua aba, e detecta palavras-chave na voz
+do streamer. Em cada live, dá para salvar um clipe (com alguns segundos ANTES
+e DEPOIS da palavra) ou apenas registrar o momento no "ocorrencias.csv" —
+desligue "Salvar clipe" e capture na mão depois. Além das ocorrências, guardo
+a TRANSCRIÇÃO COMPLETA de cada live em "falas/<canal>.txt" (tempo | relógio | fala).
 
-Como o clipe funciona: o programa mantém só os últimos ~2,5 minutos da live
-numa pasta temporária (apagando o que ficou velho). Quando uma palavra aparece,
-ele junta os pedaços do buffer ao redor daquele momento e salva um MP4 em "clipes/".
-Ao parar o programa, a pasta temporária é apagada. Nada além dos clipes fica salvo.
+Como o clipe funciona: enquanto está ligado, o programa mantém só os últimos
+~2,5 minutos da live numa pasta temporária (apagando o que ficou velho).
+Quando uma palavra aparece, ele junta os pedaços do buffer ao redor daquele
+momento e salva um MP4 em "clipes/", com o rótulo da live no nome do arquivo.
+Ao fechar a aba, a pasta temporária daquela live é apagada; nada além dos
+clipes fica salvo.
+
+O modelo de voz é COMPARTILHADO entre as lives: mesmo modelo em várias abas
+usa uma única cópia na memória.
 
 Uso: python livecapture_gui.py
 Requisitos: ver requirements.txt (e ffmpeg instalado no sistema).
 """
 import csv
 import datetime as dt
-import glob
 import os
 import queue
 import re
@@ -42,59 +49,53 @@ SEGMENT_SEC = 2               # tamanho dos pedaços do buffer
 BUFFER_KEEP_SEC = 150         # quanto da live fica no buffer
 AUDIO_QUALITY = "audio_only,worst"
 VIDEO_QUALITY = "480p,360p,worst"   # qualidade usada quando o clipe está ligado
-MAX_CLIP_JOBS = 2             # máximo de clipes em execução ou na fila
-# Pasta de saida: o launcher define LIVECAPTURE_HOME (Videos\LiveCapture).
-# Sem a variavel, usa a pasta atual (como antes).
-DATA_DIR = os.environ.get("LIVECAPTURE_HOME", "")
-LOG_FILE = os.path.join(DATA_DIR, "ocorrencias.csv") if DATA_DIR else "ocorrencias.csv"
-CLIP_DIR = os.path.join(DATA_DIR, "clipes") if DATA_DIR else "clipes"
-# No Windows, sem isto cada ffmpeg/streamlink abre uma janela preta de console.
-NO_WINDOW = {"creationflags": 0x08000000} if sys.platform.startswith("win") else {}
+MAX_CLIP_JOBS = 2             # concatenações de clipe simultâneas
+LOG_FILE = "ocorrencias.csv"
+CLIP_DIR = "clipes"
 
 
 # ---------------------------------------------------------------- utilidades
-def _extra_tool_dirs():
-    """Onde procurar ffmpeg/streamlink/yt-dlp alem do PATH (Windows).
-
-    Inclui a pasta do proprio app (onde o ffmpeg.exe do ZIP fica) e as pastas
-    que o bootstrap cria/usa (%LOCALAPPDATA%\\LiveCapture\\bin e o winget).
-    """
-    here = os.path.dirname(os.path.abspath(__file__))
-    dirs = [here, os.path.join(here, "bin")]
-    home = os.environ.get("LOCALAPPDATA") or ""
-    if home:
-        b = os.path.join(home, "LiveCapture", "bin")
-        dirs += [b] + glob.glob(os.path.join(b, "ffmpeg*", "bin"))
-        dirs.append(os.path.join(home, "Microsoft", "WinGet", "Links"))
-        dirs += glob.glob(os.path.join(home, "Microsoft", "WinGet", "Packages",
-                                       "*FFmpeg*", "**", "bin"), recursive=True)
-    return dirs
-
-
 def find_tool(name):
-    """Localiza um executavel: PATH, pasta do interpretador (venv/Scripts) e
-    as pastas onde o app/instalador coloca o ffmpeg."""
+    """Localiza um executável: PATH, Scripts do interpretador ou pasta embutida."""
     exe = shutil.which(name)
     if exe:
         return exe
-    for d in [os.path.dirname(sys.executable)] + _extra_tool_dirs():
+    scripts = os.path.dirname(sys.executable)
+    for cand in (name, name + ".exe"):
+        path = os.path.join(scripts, cand)
+        if os.path.exists(path):
+            return path
+    if getattr(sys, "frozen", False):       # ffmpeg embutido no pacote do exe
+        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
         for cand in (name, name + ".exe"):
-            path = os.path.join(d, cand)
-            if os.path.isfile(path):
+            path = os.path.join(base, "bin", cand)
+            if os.path.exists(path):
                 return path
     return name                      # deixa o erro do sistema aparecer se faltar
 
 
+def tool_argv(name):
+    """Como invocar uma ferramenta externa (streamlink/yt-dlp).
+
+    Rodando do venv: abre o exe do Scripts/PATH. Empacotado: os módulos das
+    ferramentas vão EMBUTIDOS no exe, que relança a si mesmo em modo CLI —
+    assim nada de Python precisa estar instalado na máquina de quem usa.
+    """
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+        cli = os.path.join(base, "LiveCapture-cli.exe")
+        if os.path.exists(cli):
+            return [cli, "--lctool", name]
+        return [sys.executable, "--lctool", name]
+    return [find_tool(name)]
+
+
 def normalize(text):
-    """Normaliza acentos/pontuação sem descartar alfabetos não latinos."""
-    text = unicodedata.normalize("NFKD", str(text).casefold())
-    chars = []
-    for char in text:
-        if unicodedata.combining(char):
-            continue
-        # Mantém letras/números Unicode (japonês, cirílico, árabe etc.) e espaços.
-        chars.append(char if char.isalnum() or char.isspace() else " ")
-    return re.sub(r"\s+", " ", "".join(chars)).strip()
+    text = unicodedata.normalize("NFKD", text.lower())
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    # colapsa espaços para não quebrar palavras-chave com várias palavras
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def fmt(seconds):
@@ -103,10 +104,7 @@ def fmt(seconds):
 
 
 def safe_name(text):
-    # Preserva letras Unicode no nome do arquivo e remove caracteres inválidos.
-    value = "".join(c if c.isalnum() or c in "_-" else "_" for c in normalize(text))
-    value = re.sub(r"_+", "_", value).strip("_-")
-    return value[:30] or "palavra"
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", normalize(text).strip())[:30] or "palavra"
 
 
 def parse_start(text):
@@ -128,9 +126,9 @@ def detect_start(url):
     """Tenta descobrir o início da live com yt-dlp. Devolve epoch ou None."""
     try:
         out = subprocess.run(
-            [find_tool("yt-dlp"), "--skip-download", "--no-warnings",
-             "--print", "%(release_timestamp)s|%(timestamp)s", url],
-            capture_output=True, text=True, timeout=40, **NO_WINDOW,
+            tool_argv("yt-dlp") + ["--skip-download", "--no-warnings",
+                                   "--print", "%(release_timestamp)s|%(timestamp)s", url],
+            capture_output=True, text=True, timeout=40,
         ).stdout.strip().splitlines()[-1]
         for value in out.split("|"):
             if value.isdigit():
@@ -138,6 +136,98 @@ def detect_start(url):
     except Exception:
         pass
     return None
+
+
+# ------------------------------------------------------------------ falas/TXT
+# Além das ocorrências, cada live pode guardar a TRANSCRIÇÃO COMPLETA num TXT
+# (falas/<canal>.txt): tempo da live | relógio | fala. Um arquivo por aba.
+FALAS_DIR = "falas"
+
+
+def falas_path(tag):
+    """Arquivo TXT donde ficam as falas completas de uma live."""
+    return os.path.join(FALAS_DIR, safe_name(tag) + ".txt")
+
+
+class FalaLog:
+    """Grava as falas de UMA live num TXT, abrindo o arquivo só na 1ª fala."""
+
+    def __init__(self, tag):
+        self.tag = tag
+        self.path = falas_path(tag)
+        self._fh = None
+
+    def _open(self):
+        if self._fh is not None:
+            return True
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            self._fh = open(self.path, "a", encoding="utf-8", errors="replace")
+            if self._fh.tell() == 0:
+                self._fh.write("# LiveCapture — falas (tempo_live | relógio | fala) "
+                               f"de {self.tag}\n")
+            return True
+        except OSError:
+            self.path = None
+            self._fh = None
+            return False
+
+    def write(self, live, clock, text):
+        """Grava uma fala. Devolve o caminho do arquivo (ou None se falhou)."""
+        text = (text or "").strip()
+        if not text:
+            return None
+        if not self._open() or self.path is None:
+            return None
+        try:
+            self._fh.write(f"{live} | {clock} | {text}\n")
+            self._fh.flush()
+            return self.path
+        except OSError:
+            return None
+
+    def close(self):
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+            self._fh = None
+
+
+# ------------------------------------------------------- modelo compartilhado
+# Uma ÚNICA cópia do Whisper atende todas as lives: mesmo modelo = mesma RAM.
+# N workers dentro do modelo permite algumas transcrições em paralelo (mais
+# que isso, os chamados entram numa fila interna do próprio modelo).
+MODEL_WORKERS = 3
+_MODELS: dict = {}
+_MODEL_LOCK = threading.Lock()
+
+
+def get_model(model_name):
+    """Devolve um WhisperModel compartilhado entre todas as lives."""
+    from faster_whisper import WhisperModel   # demorado só na primeira vez
+    with _MODEL_LOCK:
+        model = _MODELS.get(model_name)
+        if model is None:
+            model = _MODELS[model_name] = WhisperModel(
+                model_name, device="auto", compute_type="default",
+                num_workers=MODEL_WORKERS)
+        return model
+
+
+def live_tag(url):
+    """Rótulo curto da live, tirado do link, para abas e nomes de arquivo."""
+    try:
+        path = url.split("?", 1)[0].rstrip("/").replace("\\", "/")
+        skip = {"live", "streams", "watch", "youtube.com", "twitch.tv",
+                "kick.com", "www.youtube.com", "www.twitch.tv", "m.youtube.com"}
+        for part in reversed(path.split("/")):
+            if part and part.lower() not in skip and not part.startswith("http"):
+                return safe_name(part)
+    except Exception:
+        pass
+    return "live"
 
 
 # ------------------------------------------------------------- buffer / clipe
@@ -175,17 +265,13 @@ def make_clip(tmp_dir, list_path, media_t, pre, post, out_path, stop):
     """Junta os pedaços do buffer de (media_t - pre) até (media_t + post)."""
     t0, t1 = max(0.0, media_t - pre), media_t + post
     deadline = time.time() + post + 45
-    # Parar a captura não cancela o clipe: aguardamos a janela posterior até
-    # ela chegar ou até o limite. Se a live cair, o timeout permite salvar o
-    # trecho disponível sem manter o worker preso indefinidamente.
-    while time.time() < deadline:
+    while not stop.is_set() and time.time() < deadline:   # espera o "depois" chegar
         rows = read_segments(list_path)
-        if not rows:
-            return False
-        if rows[-1][2] >= t1:
+        if rows and rows[-1][2] >= t1:
             break
-        time.sleep(0.5)
-    # Mesmo se o usuario parou, corta o que ja esta no buffer (nao perde o clipe).
+        time.sleep(1)
+    if stop.is_set():
+        return False
     pieces = [r for r in read_segments(list_path)
               if r[2] > t0 and r[1] < t1 and os.path.exists(os.path.join(tmp_dir, r[0]))]
     if not pieces:
@@ -202,15 +288,13 @@ def make_clip(tmp_dir, list_path, media_t, pre, post, out_path, stop):
         res = subprocess.run(
             common + ["-c", "copy", "-avoid_negative_ts", "make_zero",
                       "-movflags", "+faststart", out_path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=120, **NO_WINDOW)
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         ok = res.returncode == 0 and os.path.exists(out_path)
         if not ok:                       # -c copy falhou: recodifica para não perder o clipe
             res = subprocess.run(
                 common + ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
                           "-movflags", "+faststart", out_path],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=180, **NO_WINDOW)
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             ok = res.returncode == 0 and os.path.exists(out_path)
         return ok
     finally:
@@ -222,106 +306,52 @@ def make_clip(tmp_dir, list_path, media_t, pre, post, out_path, stop):
 
 # -------------------------------------------------------------------- worker
 class Worker(threading.Thread):
+    """Monitora UMA live (uma instância por aba) até o stop ser acionado."""
+
     def __init__(self, url, keywords, model_name, live_start, out, stop,
-                 clip_on, pre, post, lang="pt"):
+                 clip_on, pre, post, tag=None):
         super().__init__(daemon=True)
         self.url, self.out, self.stop = url, out, stop
         self.kw = {normalize(k).strip(): k for k in keywords}
         self.model_name, self.live_start = model_name, live_start
         self.clip_on, self.pre, self.post = clip_on, pre, post
-        self.lang = None if lang in (None, "", "auto") else lang
-        self.model, self.on_cpu, self.sl_err = None, False, ""
+        self.tag = tag or live_tag(url)
         self.procs, self.tmp = [], None
-        self._proc_lock = threading.Lock()
+        self.falas = FalaLog(self.tag)
+        self.falas_announced = False
         self.clip_threads = []
-        self.clip_sem = threading.BoundedSemaphore(MAX_CLIP_JOBS)
+        self.clip_sem = threading.Semaphore(MAX_CLIP_JOBS)
 
     def run(self):
         try:
             self._run()
         except Exception as e:
-            self.out.put(("end", f"Erro: {e}", self))
+            self.out.put(("end", f"Erro: {e}"))
         finally:
             self.kill()
-            # Não apague o buffer enquanto qualquer FFmpeg ainda o estiver lendo.
-            # Cada clipe tem timeout próprio; aguardamos a conclusão real.
-            for t in list(self.clip_threads):
-                t.join()
+            for t in list(self.clip_threads):      # deixa os clipes em curso terminarem
+                t.join(timeout=max(60, self.post + 45))
             if self.tmp:
                 shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _register_proc(self, proc):
-        with self._proc_lock:
-            self.procs.append(proc)
-            should_stop = self.stop.is_set()
-        if should_stop:
-            self._terminate_proc(proc)
-        return proc
-
-    @staticmethod
-    def _terminate_proc(proc):
-        if proc.poll() is not None:
-            return
-        try:
-            proc.terminate()
-            proc.wait(timeout=3)
-        except Exception:
+    def kill(self):
+        self.falas.close()                   # TXT fecha mesmo abortando o thread
+        for p in self.procs:
             try:
-                proc.kill()
-                proc.wait(timeout=3)
+                p.kill()
             except Exception:
                 pass
 
-    def kill(self):
-        with self._proc_lock:
-            procs = list(self.procs)
-        for proc in procs:
-            self._terminate_proc(proc)
-
-    def _load_model(self, device="auto"):
-        from faster_whisper import WhisperModel
-        compute = "auto" if device == "auto" else "int8"
-        return WhisperModel(self.model_name, device=device, compute_type=compute)
-
-    def _transcribe(self, audio):
-        """Transcreve; se a GPU falhar (CUDA/cuDNN ausente), cai para a CPU."""
-        kw = dict(language=self.lang, vad_filter=True, beam_size=1,
-                  condition_on_previous_text=False)
-        try:
-            segs, _ = self.model.transcribe(audio, **kw)
-            return list(segs)             # o erro de GPU aparece ao consumir
-        except Exception:
-            if self.on_cpu:
-                raise
-            self.out.put(("status", "GPU indisponível; usando o processador..."))
-            self.model, self.on_cpu = self._load_model("cpu"), True
-            segs, _ = self.model.transcribe(audio, **kw)
-            return list(segs)
-
     def _run(self):
-        self.out.put(("status", f"Carregando modelo '{self.model_name}' "
-                                "(na 1ª vez ele é baixado: pode demorar)..."))
-        try:
-            self.model = self._load_model("auto")
-        except Exception:
-            self.model, self.on_cpu = self._load_model("cpu"), True
-        if self.stop.is_set():               # usuario clicou Parar durante o carregamento
-            self.out.put(("end", "Parado.", self))
-            return
+        self.out.put(("status", f"Preparando modelo '{self.model_name}'..."))
+        model = get_model(self.model_name)   # compartilhado entre as abas
 
         self.out.put(("status", "Abrindo a live..."))
         quality = VIDEO_QUALITY if self.clip_on else AUDIO_QUALITY
-        sl = self._register_proc(subprocess.Popen(
-            [find_tool("streamlink"), self.url, quality, "--stdout", "--loglevel", "error"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, **NO_WINDOW))
-
-        def drain_err():                     # guarda o motivo se o streamlink falhar
-            for line in sl.stderr:
-                txt = line.decode("utf-8", "replace").strip()
-                if txt:
-                    self.sl_err = txt
-
-        threading.Thread(target=drain_err, daemon=True).start()
+        sl = subprocess.Popen(
+            tool_argv("streamlink") + [self.url, quality,
+                                       "--stdout", "--loglevel", "error"],
+            stdout=subprocess.PIPE)
 
         cmd = [find_tool("ffmpeg"), "-loglevel", "error", "-i", "pipe:0",
                "-map", "0:a:0", "-f", "s16le", "-ac", "1", "-ar", str(SAMPLE_RATE), "pipe:1"]
@@ -335,23 +365,10 @@ class Worker(threading.Thread):
                     "-segment_list", list_path, "-segment_list_type", "csv",
                     "-segment_list_flags", "+live",
                     os.path.join(self.tmp, "seg_%06d.ts")]
-        try:
-            ff = self._register_proc(subprocess.Popen(
-                cmd, stdin=sl.stdout, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL, **NO_WINDOW))
-        except Exception:
-            # Streamlink já foi iniciado: encerre-o se o FFmpeg não puder abrir.
-            self._terminate_proc(sl)
-            for stream in (sl.stdout, sl.stderr):
-                try:
-                    if stream:
-                        stream.close()
-                except OSError:
-                    pass
-            raise
-        finally:
-            if sl.stdout:
-                sl.stdout.close()
+        ff = subprocess.Popen(cmd, stdin=sl.stdout, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL)
+        sl.stdout.close()
+        self.procs = [sl, ff]
 
         audio_q = queue.Queue()
 
@@ -369,21 +386,14 @@ class Worker(threading.Thread):
         self.out.put(("status", "Monitorando..."))
 
         tail, last_hit, deleted, hit_id = b"", {}, set(), 0
-        last_warn, slow = 0.0, False
         while not self.stop.is_set():
             try:
                 item = audio_q.get(timeout=1)
             except queue.Empty:
                 continue
             if item is None:
-                if self.stop.is_set():
-                    msg = "Parado."
-                else:
-                    time.sleep(0.5)          # deixa o streamlink terminar de escrever o erro
-                    msg = "Live encerrada ou indisponível."
-                    if self.sl_err:
-                        msg += f" ({self.sl_err[:140]})"
-                self.out.put(("end", msg, self))
+                self.out.put(("end", "Parado." if self.stop.is_set()
+                              else "Live encerrada ou stream indisponível."))
                 return
             data, arrived, offset = item
             buf = tail + data
@@ -398,83 +408,73 @@ class Worker(threading.Thread):
                 cleanup_old(self.tmp, list_path, deleted)
             self.clip_threads = [t for t in self.clip_threads if t.is_alive()]
 
-            t_trans = time.time()
-            segments = self._transcribe(audio)
-            took = time.time() - t_trans
-            if took > CHUNK_SEC and time.time() - last_warn > 30:
-                last_warn, slow = time.time(), True
-                self.out.put(("status", f"Atenção: o PC está atrasado ({took:.0f}s para "
-                                        f"{CHUNK_SEC}s de áudio). Use um modelo menor."))
-            elif slow and took < CHUNK_SEC * 0.8:
-                slow = False
-                self.out.put(("status", "Monitorando..."))
+            segments, _ = model.transcribe(
+                audio, language="pt", vad_filter=True, beam_size=1,
+                condition_on_previous_text=False)
             for seg in segments:
+                when = window_wall + seg.start
+                clock = dt.datetime.fromtimestamp(when).strftime("%H:%M:%S")
+                live = fmt(when - self.live_start) if self.live_start else "—"
                 norm = " " + normalize(seg.text).strip() + " "
                 for kn, original in self.kw.items():
                     if f" {kn} " not in norm:
                         continue
-                    when = window_wall + seg.start
                     if when - last_hit.get(kn, 0) < COOLDOWN_SEC:
                         continue
                     last_hit[kn] = when
                     hit_id += 1
-                    clock = dt.datetime.fromtimestamp(when).strftime("%H:%M:%S")
-                    live = fmt(when - self.live_start) if self.live_start else "—"
                     out_path = ""
-                    clip_thread = None
-                    clip_rejected = False
                     if list_path:
                         stamp = dt.datetime.fromtimestamp(when).strftime("%Y%m%d_%H%M%S")
                         out_path = os.path.join(
-                            CLIP_DIR, f"clipe_{stamp}_{safe_name(original)}.mp4")
-                        # Não crie threads ilimitadas esperando o semáforo: se os
-                        # dois slots estiverem ocupados, descarte apenas este job.
-                        if self.clip_sem.acquire(blocking=False):
-                            clip_thread = threading.Thread(
-                                target=self._clip_job,
-                                args=(hit_id, list_path, window_media + seg.start, out_path),
-                                daemon=True)
-                            self.clip_threads.append(clip_thread)
-                        else:
-                            clip_rejected = True
-                    # Registre a ocorrência antes de iniciar o job: evita que um
-                    # clipe muito rápido termine antes de a linha existir na GUI.
+                            CLIP_DIR,
+                            f"clipe_{self.tag}_{stamp}_{safe_name(original)}.mp4")
+                        t = threading.Thread(
+                            target=self._clip_job,
+                            args=(hit_id, list_path, window_media + seg.start, out_path),
+                            daemon=True)
+                        t.start()
+                        self.clip_threads.append(t)
                     self.out.put(("hit", hit_id, clock, live, original,
                                   seg.text.strip(), out_path))
-                    if clip_thread:
-                        clip_thread.start()
-                    elif clip_rejected:
-                        self.out.put(("clip", hit_id, False, out_path))
-        self.out.put(("end", "Parado.", self))
+                fala = seg.text.strip()
+                if fala:
+                    path = self.falas.write(live, clock, fala)
+                    if path and not self.falas_announced:
+                        self.falas_announced = True
+                        self.out.put(("falas", path))
+        self.falas.close()
+        self.out.put(("end", "Parado."))
 
     def _clip_job(self, hit_id, list_path, media_t, out_path):
-        try:
+        with self.clip_sem:                  # limita ffmpeg simultâneos
             ok = make_clip(self.tmp, list_path, media_t, self.pre, self.post,
                            out_path, self.stop)
-        except (OSError, subprocess.SubprocessError):
-            ok = False
-        finally:
-            self.clip_sem.release()
         self.out.put(("clip", hit_id, ok, out_path))
 
 
 # ----------------------------------------------------------------------- GUI
-class App(tk.Tk if tk else object):
-    def __init__(self):
-        super().__init__()
-        self.title("LiveCapture")
-        self.geometry("900x600")
-        self.out, self.stop_evt, self.worker = queue.Queue(), threading.Event(), None
-        self.rows = {}
-        self._close_when_done = False
+class LivePanel(ttk.Frame):
+    """Uma live monitorada: link, palavras-chave, clipe on/off e resultados."""
 
-        top = ttk.Frame(self, padding=10)
+    def __init__(self, master, app):
+        super().__init__(master, padding=10)
+        self.app = app
+        self.out, self.worker, self.rows = queue.Queue(), None, {}
+        self.stop_evt = threading.Event()
+        self._closed = False
+        self.tag = None
+
+        top = ttk.Frame(self)
         top.pack(fill="x")
         top.columnconfigure(1, weight=1)
 
         ttk.Label(top, text="Link da live:").grid(row=0, column=0, sticky="w")
         self.url = ttk.Entry(top)
         self.url.grid(row=0, column=1, columnspan=3, sticky="ew", padx=6, pady=2)
+        ttk.Button(top, text="Fechar aba ✕",
+                   command=lambda: app.remove_panel(self)
+                   ).grid(row=0, column=4, padx=(8, 0))
 
         ttk.Label(top, text="Palavras-chave\n(uma por linha):").grid(row=1, column=0, sticky="nw")
         self.words = tk.Text(top, height=5, width=30)
@@ -493,42 +493,23 @@ class App(tk.Tk if tk else object):
                                   state="readonly", width=10)
         self.model.set("small")
         self.model.pack(anchor="w")
-        ttk.Label(side, text="Idioma da fala:").pack(anchor="w", pady=(8, 0))
-        self.lang = ttk.Combobox(side, values=["pt", "en", "es", "auto"],
-                                 state="readonly", width=10)
-        self.lang.set("pt")
-        self.lang.pack(anchor="w")
 
-        opts = ttk.LabelFrame(self, text="Clipe", padding=(10, 6))
-        opts.pack(fill="x", padx=10, pady=(4, 0))
+        opts = ttk.Frame(self, padding=(10, 0))
+        opts.pack(fill="x")
         self.clip_var = tk.BooleanVar(value=True)
-        row_mode = ttk.Frame(opts)
-        row_mode.pack(fill="x")
-        ttk.Label(row_mode, text="Baixar clipe (vídeo MP4):").pack(side="left")
-        ttk.Radiobutton(row_mode, text="Sim", value=True,
-                        variable=self.clip_var).pack(side="left", padx=(8, 4))
-        ttk.Radiobutton(row_mode, text="Não", value=False,
-                        variable=self.clip_var).pack(side="left")
-        ttk.Label(opts, foreground="#555555", wraplength=820, justify="left",
-                  text="Não = registra só o tempo da live, a frase e o relógio "
-                       "(sem clipe e sem áudio gravado)."
-                  ).pack(anchor="w", pady=(2, 4))
-        row_sec = ttk.Frame(opts)
-        row_sec.pack(fill="x")
-        ttk.Label(row_sec, text="Segundos antes:").pack(side="left")
-        self.pre = ttk.Spinbox(row_sec, from_=3, to=45, width=4)
+        ttk.Checkbutton(opts, text="Salvar clipe", variable=self.clip_var).pack(side="left")
+        ttk.Label(opts, text="  Segundos antes:").pack(side="left")
+        self.pre = ttk.Spinbox(opts, from_=3, to=45, width=4)
         self.pre.set(10)
         self.pre.pack(side="left")
-        ttk.Label(row_sec, text="  depois:").pack(side="left")
-        self.post = ttk.Spinbox(row_sec, from_=3, to=45, width=4)
+        ttk.Label(opts, text="  depois:").pack(side="left")
+        self.post = ttk.Spinbox(opts, from_=3, to=45, width=4)
         self.post.set(5)
         self.post.pack(side="left")
-        ttk.Button(row_sec, text="Abrir pasta de clipes",
-                   command=self.open_folder).pack(side="left", padx=12)
 
         btns = ttk.Frame(self, padding=(10, 8))
         btns.pack(fill="x")
-        self.btn = ttk.Button(btns, text="Iniciar", command=self.toggle)
+        self.btn = ttk.Button(btns, text="Iniciar live", command=self.toggle)
         self.btn.pack(side="left")
         self.status = ttk.Label(btns, text="Parado.")
         self.status.pack(side="left", padx=10)
@@ -542,20 +523,18 @@ class App(tk.Tk if tk else object):
             self.tree.column(c, width=w, anchor="w")
         self.tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         self.tree.bind("<Double-1>", self.copy_time)
-        ttk.Label(self, text="Dois cliques numa linha copiam o tempo da live. "
-                             "Com o clipe ligado, o vídeo é baixado em qualidade baixa.").pack(pady=(0, 8))
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.hint = ttk.Label(self, text="Dois cliques numa linha copiam o tempo da live. "
+                              "“Salvar clipe” desligado grava só o tempo no CSV — "
+                              "para clipar na mão depois.")
+        self.hint.pack(pady=(0, 8))
         self.after(200, self.poll)
 
-    def open_folder(self):
-        path = os.path.abspath(CLIP_DIR)
-        os.makedirs(path, exist_ok=True)
-        if sys.platform.startswith("win"):
-            os.startfile(path)
-        elif sys.platform == "darwin":
-            subprocess.run(["open", path])
-        else:
-            subprocess.run(["xdg-open", path])
+    def close(self):
+        """Para tudo que roda nesta aba e evita que o laço de mensagens continue."""
+        self._closed = True
+        self.stop_evt.set()
+        if self.worker and self.worker.is_alive():
+            self.worker.kill()
 
     def auto_detect(self):
         url = self.url.get().strip()
@@ -578,12 +557,10 @@ class App(tk.Tk if tk else object):
         threading.Thread(target=job, daemon=True).start()
 
     def toggle(self):
-        if self.btn.cget("text") == "Parar":      # (um worker antigo ainda pode estar encerrando)
+        if self.worker and self.worker.is_alive():
             self.stop_evt.set()
-            if self.worker:
-                self.worker.kill()
-            self.btn.config(text="Iniciar")
-            self.status.config(text="Parando...")
+            self.worker.kill()
+            self.btn.config(text="Iniciar live")
             return
         url = self.url.get().strip()
         kws = [w.strip() for w in self.words.get("1.0", "end").splitlines() if w.strip()]
@@ -592,38 +569,16 @@ class App(tk.Tk if tk else object):
         try:
             live_start = parse_start(self.start.get())
             pre, post = int(self.pre.get()), int(self.post.get())
-            if not 3 <= pre <= 45 or not 3 <= post <= 45:
-                raise ValueError("segundos fora do intervalo")
         except ValueError:
             return messagebox.showinfo(
-                "LiveCapture", "Informe o horário como HH:MM ou HH:MM:SS e segundos entre 3 e 45.")
+                "LiveCapture", "Confira os campos: horário no formato HH:MM e segundos como números.")
+        self.tag = live_tag(url)
+        self.app.update_tab(self, f"● {self.tag}")
         self.stop_evt = threading.Event()
         self.worker = Worker(url, kws, self.model.get(), live_start, self.out,
-                             self.stop_evt, self.clip_var.get(), pre, post,
-                             lang=self.lang.get())
+                             self.stop_evt, self.clip_var.get(), pre, post, self.tag)
         self.worker.start()
         self.btn.config(text="Parar")
-
-    def on_close(self):
-        if self._close_when_done:
-            return
-        self._close_when_done = True
-        self.stop_evt.set()
-        if self.worker and self.worker.is_alive():
-            self.worker.kill()
-            self.btn.config(state="disabled")
-            self.status.config(text="Finalizando gravações e clipes antes de fechar...")
-            self.after(200, self._finish_close)
-        else:
-            self.destroy()
-
-    def _finish_close(self):
-        # Mantém o loop Tk ativo enquanto o worker aguarda os clipes e limpa
-        # o temporário. Assim, o encerramento da janela não mata threads daemon.
-        if self.worker and self.worker.is_alive():
-            self.after(200, self._finish_close)
-        else:
-            self.destroy()
 
     def copy_time(self, _):
         sel = self.tree.selection()
@@ -644,6 +599,8 @@ class App(tk.Tk if tk else object):
             pass
 
     def poll(self):
+        if self._closed:
+            return
         try:
             while not self.out.empty():
                 msg = self.out.get()
@@ -651,10 +608,10 @@ class App(tk.Tk if tk else object):
                 if kind == "status":
                     self.status.config(text=msg[1])
                 elif kind == "end":
-                    if len(msg) > 2 and msg[2] is not self.worker:
-                        continue                  # "fim" de um worker antigo
                     self.status.config(text=msg[1])
-                    self.btn.config(text="Iniciar")
+                    self.btn.config(text="Iniciar live")
+                    if self.tag:
+                        self.app.update_tab(self, f"○ {self.tag}")
                 elif kind == "hit":
                     _, hid, clock, live, word, text, clip_path = msg
                     iid = self.tree.insert("", 0, values=(
@@ -662,6 +619,8 @@ class App(tk.Tk if tk else object):
                     self.rows[hid] = iid
                     self.bell()
                     self._log_hit(live, clock, word, text, clip_path)
+                elif kind == "falas":
+                    self.hint.config(text=f"Falas completas em: {msg[1]}")
                 elif kind == "clip":
                     _, hid, ok, path = msg
                     iid = self.rows.get(hid)
@@ -674,8 +633,155 @@ class App(tk.Tk if tk else object):
             except Exception:
                 pass
         finally:
-            self.after(200, self.poll)
+            if not self._closed:
+                self.after(200, self.poll)
+
+
+class App(tk.Tk if tk else object):
+    """Janela principal: botões do topo + abas (uma por live monitorada)."""
+
+    def __init__(self):
+        super().__init__()
+        self.title("LiveCapture — monitor de lives")
+        self.geometry("1060x700")
+        self.panels = []
+        self.count = 0
+
+        bar = ttk.Frame(self, padding=8)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="＋ Nova live", command=self.add_panel).pack(side="left")
+        ttk.Button(bar, text="Abrir pasta de clipes",
+                   command=self.open_folder).pack(side="left", padx=10)
+        ttk.Label(bar, text="Cada aba é uma live independente (com link, palavras e "
+                            "clipe próprios); o modelo de voz é compartilhado em RAM."
+                  ).pack(side="left", padx=8)
+
+        self.nb = ttk.Notebook(self)
+        self.nb.pack(fill="both", expand=True)
+        self.add_panel()
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    # --------------------------------------------------------------------- abas
+    def add_panel(self):
+        self.count += 1
+        panel = LivePanel(self.nb, self)
+        self.nb.add(panel, text=f"live {self.count}")
+        self.panels.append(panel)
+        self.nb.select(panel)
+
+    def remove_panel(self, panel):
+        if panel.worker and panel.worker.is_alive():
+            if not messagebox.askyesno("LiveCapture",
+                                       "Essa live está sendo monitorada.\nFechar a aba?"):
+                return
+        panel.close()
+        try:
+            self.nb.forget(panel)
+        except Exception:
+            pass
+        if panel in self.panels:
+            self.panels.remove(panel)
+
+    def update_tab(self, panel, text):
+        try:
+            self.nb.tab(panel, text=text)
+        except Exception:
+            pass
+
+    def open_folder(self):
+        path = os.path.abspath(CLIP_DIR)
+        os.makedirs(path, exist_ok=True)
+        if sys.platform.startswith("win"):
+            os.startfile(path)
+        elif sys.platform == "darwin":
+            subprocess.run(["open", path])
+        else:
+            subprocess.run(["xdg-open", path])
+
+    def on_close(self):
+        for panel in list(self.panels):
+            panel.close()
+        self.destroy()
+
+
+def run_monitor_headless(argv):
+    """Modo sem interface: monitora uma live e imprime os eventos (testes)."""
+    url, kws, model = None, ["a", "de", "que"], "tiny"
+    clip, pre, post, secs = True, 6, 4, 30
+    try:
+        tokens = iter(argv)
+        for a in tokens:
+            if a == "--kws":
+                kws = [k for k in next(tokens).split(",") if k]
+            elif a == "--model":
+                model = next(tokens)
+            elif a == "--no-clip":
+                clip = False
+            elif a == "--pre":
+                pre = int(next(tokens))
+            elif a == "--post":
+                post = int(next(tokens))
+            elif a == "--sec":
+                secs = int(next(tokens))
+            elif url is None:
+                url = a
+    except (StopIteration, ValueError):
+        print("uso: --monitor URL [--kws kw1,kw2] [--model tiny] "
+              "[--no-clip] [--pre s] [--post s] [--sec s]", flush=True)
+        return 2
+    if not url:
+        print("uso: --monitor URL ...", flush=True)
+        return 2
+
+    out, stop = queue.Queue(), threading.Event()
+    tag = live_tag(url)
+    w = Worker(url, kws, model, None, out, stop, clip, pre, post, tag)
+    w.start()
+    hits, t0, code = 0, time.time(), 0
+    while time.time() - t0 < secs:
+        try:
+            m = out.get(timeout=1)
+        except queue.Empty:
+            continue
+        kind = m[0]
+        if kind == "status":
+            print("STATUS", m[1], flush=True)
+        elif kind == "hit":
+            _, hid, clock, live, word, txt, clip_path = m
+            hits += 1
+            print(f"HIT {hits} relogio={clock} live={live} palavra={word} "
+                  f"frase={txt} clipe="
+                  f"{os.path.basename(clip_path) if clip_path else '-'}", flush=True)
+        elif kind == "clip":
+            _, hid, ok, path = m
+            print(("CLIP ok " if ok else "CLIP falhou ") + os.path.basename(path),
+                  flush=True)
+        elif kind == "falas":
+            print("FALAS " + m[1], flush=True)
+        elif kind == "end":
+            print("END", m[1], flush=True)
+            if m[1] != "Parado.":
+                code = 1
+            break
+    stop.set()
+    w.kill()
+    print(f"TOTAL hits={hits}", flush=True)
+    return code
 
 
 if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--lctool":
+        # Modo CLI embutido: serve os subprocessos quando empacotado.
+        tool = sys.argv[2]
+        sys.argv = [tool] + sys.argv[3:]
+        if tool == "yt-dlp":
+            import yt_dlp
+            raise SystemExit(yt_dlp.main())
+        if tool == "streamlink":
+            import streamlink_cli.main
+            raise SystemExit(streamlink_cli.main.main())
+        print(f"modo CLI desconhecido: {tool}", flush=True)
+        raise SystemExit(2)
+    if sys.argv[1:] and sys.argv[1] == "--monitor":
+        raise SystemExit(run_monitor_headless(sys.argv[2:]))
     App().mainloop()

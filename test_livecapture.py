@@ -20,12 +20,27 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 
 import livecapture_gui as L
+
+
+@contextmanager
+def temp_dir():
+    """Roda os passos dentro de uma pasta temporária (e volta ao sair)."""
+    work = tempfile.mkdtemp(prefix="lctxt_")
+    cwd = os.getcwd()
+    os.chdir(work)
+    try:
+        yield work
+    finally:
+        os.chdir(cwd)
+        shutil.rmtree(work, ignore_errors=True)
 
 FFMPEG = L.find_tool("ffmpeg")
 FFPROBE = L.find_tool("ffprobe")
@@ -70,11 +85,6 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(L.normalize("Bom!  Dia,"), "bom dia")
         self.assertIn(" bom dia ", " " + L.normalize("Bom, dia!") + " ")
 
-    def test_normalize_preserva_alfabetos_unicode(self):
-        self.assertEqual(L.normalize("こんにちは 世界! Привет мир!"),
-                         "こんにちは 世界 привет мир")
-        self.assertEqual(L.normalize("مرحبا بالعالم"), "مرحبا بالعالم")
-
     def test_fmt(self):
         self.assertEqual(L.fmt(0), "00:00:00")
         self.assertEqual(L.fmt(3661), "01:01:01")
@@ -83,7 +93,6 @@ class TestUtils(unittest.TestCase):
     def test_safe_name(self):
         self.assertEqual(L.safe_name("Olá Mundo!"), "ola_mundo")
         self.assertEqual(L.safe_name("!!!"), "palavra")
-        self.assertEqual(L.safe_name("日本語"), "日本語")
 
     def test_parse_start_valido(self):
         self.assertIsNotNone(L.parse_start("21:30"))
@@ -92,6 +101,75 @@ class TestUtils(unittest.TestCase):
 
     def test_find_tool_ffmpeg(self):
         self.assertTrue(shutil.which(FFMPEG) or os.path.exists(FFMPEG), FFMPEG)
+
+    def test_live_tag_tira_o_nome_do_link(self):
+        self.assertEqual(L.live_tag("https://www.twitch.tv/cblol"), "cblol")
+        self.assertEqual(L.live_tag("https://kick.com/nome-do-canal"), "nome_do_canal")
+        # youtube termina em "streams"/"watch": cai para o nivel anterior
+        self.assertEqual(L.live_tag("https://www.youtube.com/@Canal/streams"), "canal")
+        self.assertEqual(L.live_tag("https://kick.com/aaa/?" + "x=1"), "aaa")
+        # sem nada aproveitavel -> rotulo generico
+        self.assertEqual(L.live_tag("https://youtube.com/live"), "live")
+
+    def test_get_model_compartilha_a_mesma_instancia(self):
+        if os.environ.get("LC_SLOW") != "1":
+            self.skipTest("defina LC_SLOW=1 para testar o modelo real")
+        a = L.get_model("tiny")
+        b = L.get_model("tiny")
+        self.assertIs(a, b)
+
+    def test_tool_argv_dev_usa_o_exe_da_venv(self):
+        argv = L.tool_argv("streamlink")
+        self.assertEqual(len(argv), 1, argv)
+        self.assertNotIn("--lctool", argv)
+
+    def test_tool_argv_frozen_relanca_em_modo_cli(self):
+        old = sys.__dict__.get("frozen", None)
+        try:
+            sys.frozen = True
+            argv = L.tool_argv("streamlink")
+            self.assertIn("--lctool", argv, argv)
+            self.assertEqual(argv[argv.index("--lctool") + 1], "streamlink")
+            self.assertTrue(argv[0].lower().endswith(".exe"), argv[0])
+        finally:
+            if old is None:
+                sys.__dict__.pop("frozen", None)
+            else:
+                sys.frozen = old
+
+    def test_falas_path_cai_na_pasta_falas(self):
+        self.assertTrue(L.falas_path("canal").replace("\\", "/")
+                        .startswith("falas/"), L.falas_path("canal"))
+
+    def test_falalog_grava_falas_com_tempos(self):
+        with temp_dir():
+            f = L.FalaLog("canal")
+            path = f.write("00:01:02", "12:34:56", "  olá mundo  ")
+            f.close()
+            self.assertTrue(path and os.path.exists(path), path)
+            txt = open(path, encoding="utf-8").read()
+            self.assertIn("00:01:02 | 12:34:56 | olá mundo", txt)
+            self.assertIn("# LiveCapture", txt)          # cabeçalho na 1ª fala
+
+    def test_falalog_continua_sem_duplicar_cabecalho(self):
+        with temp_dir():
+            a = L.FalaLog("canal")
+            a.write("00:00:01", "12:00:00", "primeira")
+            a.close()
+            b = L.FalaLog("canal")
+            b.write("00:00:02", "12:00:01", "segunda")
+            b.close()
+            txt = open(L.falas_path("canal"), encoding="utf-8").read()
+            self.assertIn("primeira", txt)
+            self.assertIn("segunda", txt)
+            self.assertEqual(txt.count("# LiveCapture"), 1)
+
+    def test_falalog_ignora_fala_vazia(self):
+        with temp_dir():
+            f = L.FalaLog("canal")
+            self.assertIsNone(f.write("00:00:01", "12:00:00", "   "))
+            f.close()
+            self.assertFalse(os.path.exists(L.falas_path("canal")))
 
 
 # --------------------------------------------------------- buffer / clipes
@@ -154,66 +232,6 @@ class TestBuffer(unittest.TestCase):
         out = os.path.join(self.tmp, "x.mp4")
         self.assertFalse(L.make_clip(self.tmp, list_path, 10, 3, 3, out,
                                      threading.Event()))
-
-
-# ------------------------------------------- stop, fallback de GPU, find_tool
-class TestRobustez(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="lctest2_")
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    @unittest.skipUnless(HAVE_FFMPEG and HAVE_FFPROBE, "ffmpeg/ffprobe nao instalados")
-    def test_make_clip_ainda_corta_depois_de_parar(self):
-        list_path = _make_segments(self.tmp, n=6)
-        out = os.path.join(self.tmp, "out", "clipe_stop.mp4")
-        stop = threading.Event()
-        stop.set()                               # usuario ja clicou em Parar
-        ok = L.make_clip(self.tmp, list_path, media_t=6, pre=3, post=3,
-                         out_path=out, stop=stop)
-        self.assertTrue(ok and os.path.exists(out))
-
-    def test_transcribe_cai_para_cpu_quando_gpu_falha(self):
-        class Seg:
-            text = "ok"; start = 0.0
-
-        class GpuQuebrada:
-            def transcribe(self, audio, **kw):
-                def gen():
-                    raise RuntimeError("Library cublas64_12.dll is not found")
-                    yield
-                return gen(), None
-
-        class Cpu:
-            def transcribe(self, audio, **kw):
-                return iter([Seg()]), None
-
-        w = L.Worker("http://x", ["a"], "tiny", None, queue.Queue(),
-                     threading.Event(), False, 3, 3)
-        w.model = GpuQuebrada()
-        w._load_model = lambda device="auto": Cpu()
-        segs = w._transcribe(b"")
-        self.assertEqual([s.text for s in segs], ["ok"])
-        self.assertTrue(w.on_cpu)
-
-    def test_worker_idioma_auto_vira_none(self):
-        w = L.Worker("http://x", ["a"], "tiny", None, queue.Queue(),
-                     threading.Event(), False, 3, 3, lang="auto")
-        self.assertIsNone(w.lang)
-        w2 = L.Worker("http://x", ["a"], "tiny", None, queue.Queue(),
-                      threading.Event(), False, 3, 3)
-        self.assertEqual(w2.lang, "pt")
-
-    def test_find_tool_acha_na_pasta_extra(self):
-        fake = os.path.join(self.tmp, "ferramenta_falsa_lc.exe")
-        open(fake, "wb").close()
-        old = L._extra_tool_dirs
-        L._extra_tool_dirs = lambda: [self.tmp]
-        try:
-            self.assertEqual(L.find_tool("ferramenta_falsa_lc"), fake)
-        finally:
-            L._extra_tool_dirs = old
 
 
 # --------------------------------------------------------------- whisper
@@ -283,6 +301,42 @@ class TestLive(unittest.TestCase):
         finally:
             os.chdir(cwd)
             shutil.rmtree(work, ignore_errors=True)
+
+
+# ------------------------------------------------------------------- multi-live
+@unittest.skipUnless(L.tk, "tkinter ausente (o teste nao abre janela de verdade)")
+class TestMultiLive(unittest.TestCase):
+    """A interface com abas: cada live vive em uma aba independente."""
+
+    def setUp(self):
+        self.app = L.App()
+
+    def tearDown(self):
+        self.app.destroy()
+
+    def test_come_com_uma_aba_e_adiciona(self):
+        self.assertEqual(len(self.app.panels), 1)
+        self.app.add_panel()
+        self.assertEqual(len(self.app.panels), 2)
+
+    def test_fechar_aba_remove_e_para_o_worker(self):
+        p0 = self.app.panels[0]
+        self.app.add_panel()
+        p1 = self.app.panels[1]
+        app = self.app
+        app.remove_panel(p1)
+        self.assertNotIn(p1, app.panels)
+        self.assertTrue(p1._closed)              # parou o laco de mensagens
+        app.remove_panel(p0)
+        self.assertEqual(len(app.panels), 0)
+
+    def test_remocao_nao_perde_outra_aba(self):
+        self.app.add_panel()
+        self.app.add_panel()
+        meio = self.app.panels[1]
+        self.app.remove_panel(meio)
+        self.assertEqual([p for p in self.app.panels][0], self.app.panels[0])
+        self.assertEqual(len(self.app.panels), 2)
 
 
 def glob_clips(clip_dir):

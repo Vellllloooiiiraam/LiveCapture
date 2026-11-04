@@ -3,13 +3,13 @@
 .venv-*/
 venv/
 build/
-dist/
-*.spec
+build_bin/
 __pycache__/
 *.pyc
 
 # Saidas do app (nao versionar conteudo de live)
 clipes/
+falas/
 ocorrencias.csv
 *.mp4
 *.ts

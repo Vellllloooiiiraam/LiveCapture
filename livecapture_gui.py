@@ -16,6 +16,9 @@ clipes fica salvo.
 O modelo de voz é COMPARTILHADO entre as lives: mesmo modelo em várias abas
 usa uma única cópia na memória.
 
+O nome da aba pode ser puxado do upload (canal + título da live) no botão
+"Detectar", ou editado na mão com o ✏️ / duplo clique no cabeçalho da aba.
+
 Uso: python livecapture_gui.py
 Requisitos: ver requirements.txt (e ffmpeg instalado no sistema).
 """
@@ -36,7 +39,7 @@ import numpy as np
 
 try:
     import tkinter as tk
-    from tkinter import ttk, messagebox
+    from tkinter import ttk, messagebox, simpledialog
 except ImportError:          # permite importar o módulo sem interface (testes)
     tk = None
 
@@ -193,6 +196,44 @@ class FalaLog:
             except OSError:
                 pass
             self._fh = None
+
+
+def parse_meta(text):
+    """Transforma a saída do yt-dlp --print em (canal, titulo).
+
+    Duas linhas: nome do canal e título da live. "NA"/"None" (campo vazio nos
+    extratores) vira None.
+    """
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    def clean(val):
+        return None if not val or val in ("NA", "None", "n/a") else val
+    canal = clean(lines[0]) if len(lines) >= 1 else None
+    titulo = clean(lines[1]) if len(lines) >= 2 else None
+    return canal, titulo
+
+
+def fetch_meta(url):
+    """Nome do canal e título da live (Twitch/Kick/YouTube) via yt-dlp.
+
+    Pede três campos (canal, uploader, título) numa só consulta; se o
+    extrator não tiver "channel", cai pro "uploader".
+    """
+    try:
+        out = subprocess.run(
+            tool_argv("yt-dlp") + ["--skip-download", "--no-warnings",
+                                   "--print", "%(channel)s", "--print",
+                                   "%(uploader)s", "--print", "%(title)s", url],
+            capture_output=True, text=True, timeout=40,
+        ).stdout
+        lines = [l.strip() for l in out.splitlines() if l.strip()]
+        def clean(v):
+            return None if not v or v in ("NA", "None", "n/a") else v
+        canal = clean(lines[0]) if len(lines) >= 1 else None
+        uploader = clean(lines[1]) if len(lines) >= 2 else None
+        titulo = clean(lines[2]) if len(lines) >= 3 else None
+        return (canal or uploader), titulo
+    except Exception:
+        return None, None
 
 
 # ------------------------------------------------------- modelo compartilhado
@@ -464,6 +505,7 @@ class LivePanel(ttk.Frame):
         self.stop_evt = threading.Event()
         self._closed = False
         self.tag = None
+        self.display_name = None      # nome mostrado na aba (auto ou manual)
 
         top = ttk.Frame(self)
         top.pack(fill="x")
@@ -472,9 +514,11 @@ class LivePanel(ttk.Frame):
         ttk.Label(top, text="Link da live:").grid(row=0, column=0, sticky="w")
         self.url = ttk.Entry(top)
         self.url.grid(row=0, column=1, columnspan=3, sticky="ew", padx=6, pady=2)
+        ttk.Button(top, text="✏️",
+                   command=self.rename_tab).grid(row=0, column=4, padx=(8, 0))
         ttk.Button(top, text="Fechar aba ✕",
                    command=lambda: app.remove_panel(self)
-                   ).grid(row=0, column=4, padx=(8, 0))
+                   ).grid(row=0, column=5, padx=(4, 0))
 
         ttk.Label(top, text="Palavras-chave\n(uma por linha):").grid(row=1, column=0, sticky="nw")
         self.words = tk.Text(top, height=5, width=30)
@@ -523,10 +567,11 @@ class LivePanel(ttk.Frame):
             self.tree.column(c, width=w, anchor="w")
         self.tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         self.tree.bind("<Double-1>", self.copy_time)
-        self.hint = ttk.Label(self, text="Dois cliques numa linha copiam o tempo da live. "
-                              "“Salvar clipe” desligado grava só o tempo no CSV — "
-                              "para clipar na mão depois.")
+        self.hint = ttk.Label(self, text="")
         self.hint.pack(pady=(0, 8))
+        self.live_title = None
+        self._falas_path = None
+        self._show_hint()
         self.after(200, self.poll)
 
     def close(self):
@@ -536,22 +581,67 @@ class LivePanel(ttk.Frame):
         if self.worker and self.worker.is_alive():
             self.worker.kill()
 
+    def _show_hint(self):
+        """Legenda abaixo da tabela: título da live, dica e caminho das falas."""
+        parts = []
+        if self.live_title:
+            parts.append(f"Título da live: {self.live_title}")
+        parts.append("Dois cliques numa linha copiam o tempo da live. "
+                     "“Salvar clipe” desligado grava só o tempo no CSV — "
+                     "para clipar na mão depois.")
+        if self._falas_path:
+            parts.append(f"Falas completas em: {self._falas_path}")
+        self.hint.config(text="\n".join(parts))
+
+    def refresh_tab(self):
+        """Redesenha o nome da aba: ● rodando / ○ parada + nome exibido."""
+        running = bool(self.worker and self.worker.is_alive())
+        name = self.display_name or self.tag or "live"
+        self.app.update_tab(self, f"{'●' if running else '○'} {name}")
+
+    def apply_name(self, name):
+        """Define o nome exibido da aba (usado pelo upload e pela renomeação)."""
+        name = (name or "").strip()
+        if not name:
+            return
+        self.display_name = name
+        self.refresh_tab()
+
+    def rename_tab(self):
+        """Renomeia a aba na mão (✏️ ou duplo clique no cabeçalho)."""
+        cur = self.display_name or self.tag or f"live {self.app.count}"
+        new = simpledialog.askstring("LiveCapture", "Nome da aba:",
+                                     initialvalue=cur, parent=self)
+        if new is not None:
+            self.apply_name(new)
+
     def auto_detect(self):
         url = self.url.get().strip()
         if not url:
             return messagebox.showinfo("LiveCapture", "Cole o link da live primeiro.")
-        self.status.config(text="Detectando início da live...")
+        self.status.config(text="Detectando início e nome da live...")
 
         def job():
             ts = detect_start(url)
+            canal, titulo = fetch_meta(url)
 
             def done():
+                name = canal or live_tag(url)      # offline/sem metadados: usa o link
+                if name:
+                    self.apply_name(name)
+                if titulo:
+                    self.live_title = titulo
+                    self._show_hint()
                 if ts:
                     self.start.delete(0, "end")
                     self.start.insert(0, dt.datetime.fromtimestamp(ts).strftime("%H:%M:%S"))
-                    self.status.config(text="Início detectado.")
+                    self.status.config(text="Início detectado." if not canal
+                                       else f"Canal: {canal}" + (f" — {titulo}" if titulo else ""))
+                elif not canal:
+                    self.status.config(text="Não consegui detectar (live offline?). "
+                                            "Digite o horário manualmente.")
                 else:
-                    self.status.config(text="Não consegui detectar. Digite o horário manualmente.")
+                    self.status.config(text=f"Canal: {name} — digite o horário manualmente.")
             self.after(0, done)
 
         threading.Thread(target=job, daemon=True).start()
@@ -573,7 +663,9 @@ class LivePanel(ttk.Frame):
             return messagebox.showinfo(
                 "LiveCapture", "Confira os campos: horário no formato HH:MM e segundos como números.")
         self.tag = live_tag(url)
-        self.app.update_tab(self, f"● {self.tag}")
+        if not self.display_name:
+            self.display_name = self.tag
+        self.refresh_tab()
         self.stop_evt = threading.Event()
         self.worker = Worker(url, kws, self.model.get(), live_start, self.out,
                              self.stop_evt, self.clip_var.get(), pre, post, self.tag)
@@ -610,8 +702,7 @@ class LivePanel(ttk.Frame):
                 elif kind == "end":
                     self.status.config(text=msg[1])
                     self.btn.config(text="Iniciar live")
-                    if self.tag:
-                        self.app.update_tab(self, f"○ {self.tag}")
+                    self.refresh_tab()
                 elif kind == "hit":
                     _, hid, clock, live, word, text, clip_path = msg
                     iid = self.tree.insert("", 0, values=(
@@ -620,7 +711,8 @@ class LivePanel(ttk.Frame):
                     self.bell()
                     self._log_hit(live, clock, word, text, clip_path)
                 elif kind == "falas":
-                    self.hint.config(text=f"Falas completas em: {msg[1]}")
+                    self._falas_path = msg[1]
+                    self._show_hint()
                 elif kind == "clip":
                     _, hid, ok, path = msg
                     iid = self.rows.get(hid)
@@ -658,10 +750,19 @@ class App(tk.Tk if tk else object):
 
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True)
+        self.nb.bind("<Double-Button-1>", self.rename_from_click)
         self.add_panel()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     # --------------------------------------------------------------------- abas
+    def rename_from_click(self, event):
+        """Duplo clique no cabeçalho de uma aba abre a renomeação dela."""
+        try:
+            idx = self.nb.index(f"@{event.x},{event.y}")
+            panel = self.nametowidget(self.nb.tabs()[idx])
+        except Exception:
+            return
+        panel.rename_tab()
     def add_panel(self):
         self.count += 1
         panel = LivePanel(self.nb, self)

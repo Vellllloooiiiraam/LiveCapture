@@ -77,8 +77,7 @@ def _duration(path):
 
 # ------------------------------------------------------------- funcoes puras
 class TestUtils(unittest.TestCase):
-    def test_normalize_remove_acento_e_pontuacao(self):
-        self.assertEqual(L.normalize("AÇÃO! Ção,"), "acao cao")
+    def test_normalize_remove_acento_e_pontuacao(self):        self.assertEqual(L.normalize("AÇÃO! Ção,"), "acao cao")
 
     def test_normalize_colapsa_espacos(self):
         # pontuacao no meio nao pode quebrar palavra-chave de varias palavras
@@ -98,6 +97,20 @@ class TestUtils(unittest.TestCase):
         self.assertIsNotNone(L.parse_start("21:30"))
         self.assertIsNotNone(L.parse_start("21:30:15"))
         self.assertIsNone(L.parse_start(""))
+
+    def test_parse_meta_canal_e_titulo(self):
+        self.assertEqual(L.parse_meta("Dersin2k\nbora ranked"), ("Dersin2k", "bora ranked"))
+        self.assertEqual(L.parse_meta("Canal"), ("Canal", None))     # sem título
+        self.assertEqual(L.parse_meta("NA\nNA"), (None, None))       # extrator vazio
+        self.assertEqual(L.parse_meta(""), (None, None))
+        self.assertEqual(L.parse_meta("  \n  "), (None, None))
+
+    def test_fetch_meta_live_real(self):
+        url = os.environ.get("LC_LIVE_URL")
+        if not url:
+            self.skipTest("defina LC_LIVE_URL=<url> para testar o nome real da live")
+        canal, _ = L.fetch_meta(url)
+        self.assertTrue(canal, f"nao achei o nome do canal em {url}")
 
     def test_find_tool_ffmpeg(self):
         self.assertTrue(shutil.which(FFMPEG) or os.path.exists(FFMPEG), FFMPEG)
@@ -337,6 +350,23 @@ class TestMultiLive(unittest.TestCase):
         self.app.remove_panel(meio)
         self.assertEqual([p for p in self.app.panels][0], self.app.panels[0])
         self.assertEqual(len(self.app.panels), 2)
+
+    def test_apply_name_renomeia_a_aba(self):
+        p = self.app.panels[0]
+        p.apply_name("Dersin2k — bora ranked")
+        self.assertEqual(self.app.nb.tab(p, "text"), "○ Dersin2k — bora ranked")
+
+    def test_apply_name_ignora_vazio(self):
+        p = self.app.panels[0]
+        p.display_name = "nome bom"
+        p.apply_name("   ")
+        self.assertEqual(p.display_name, "nome bom")
+
+    def test_refresh_tab_mostra_nome_display(self):
+        p = self.app.panels[0]
+        p.tag = "canal_x"
+        p.apply_name("Canal X")
+        self.assertEqual(self.app.nb.tab(p, "text"), "○ Canal X")
 
 
 def glob_clips(clip_dir):

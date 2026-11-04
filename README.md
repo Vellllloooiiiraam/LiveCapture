@@ -1,6 +1,6 @@
 # LiveCapture
 
-**Versão do código-fonte: 1.3.0** — veja [CHANGELOG-1.3.0.md](CHANGELOG-1.3.0.md) para as novidades.
+**Versão do código-fonte: 1.4.0** — veja [CHANGELOG-1.4.0.md](CHANGELOG-1.4.0.md) para as novidades.
 
 Monitora **várias lives ao mesmo tempo** (YouTube, Twitch, Kick), uma em cada
 aba, e detecta palavras-chave na **voz** do streamer, salvando um clipe MP4 com
@@ -51,7 +51,9 @@ O script reúne o ffmpeg, roda o PyInstaller e gera o
 
 1. Abra uma aba por live (**＋ Nova live**; dele com **Fechar aba ✕**).
 2. Cole o link da live e digite as palavras-chave (uma por linha).
-3. (Opcional) Informe o início da live em `HH:MM` ou clique em **Detectar**.
+3. (Opcional) Clique em **Detectar**: ele preenche o início da live **e** puxa o
+   nome do canal e o título para a aba. Para renomear na mão, use **✏️** ou dê
+   **duplo clique no cabeçalho** da aba.
 4. Escolha o modelo (`tiny`/`base`/`small`...; no multi-live, comece por
    **`base`/`tiny`**), marque ou desmarque **Salvar clipe** e ajuste os
    segundos antes/depois. Com o clipe **desligado**, o programa registra só o

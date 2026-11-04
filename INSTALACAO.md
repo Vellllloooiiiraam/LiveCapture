@@ -35,7 +35,9 @@ guardado em cache e não é baixado de novo.
 
 1. Abra uma aba por live com **＋ Nova live** (fecha com **Fechar aba ✕**).
 2. Cole o link da live e digite as **palavras-chave** (uma por linha).
-3. (Opcional) Informe o início da live em `HH:MM` ou clique em **Detectar**.
+3. (Opcional) Clique em **Detectar**: ele preenche o início da live e o **nome
+   do canal + título** na aba. Dá para renomear na mão com **✏️** ou duplo
+   clique no cabeçalho da aba.
 4. Escolha o **modelo** (`tiny`/`base`/`small`; com várias lives, comece por
    `base`/`tiny`), e marque **Salvar clipe** — desligado, o programa registra
    só o tempo da live no `ocorrencias.csv`, para clipar na mão depois.

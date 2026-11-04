@@ -19,17 +19,22 @@ if (-not (Test-Path $py)) {
 Write-Output ""
 Write-Output " [1/4] preparando o ffmpeg portatil..."
 New-Item -ItemType Directory -Force -Path "$proj\build_bin" | Out-Null
-$ff = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
-if (-not $ff) {
-    $ff = (Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Gyan.FFmpeg*" `
-            -Recurse -Filter ffmpeg.exe -ErrorAction SilentlyContinue |
-            Select-Object -First 1).FullName
+if (Test-Path "$proj\build_bin\ffmpeg.exe") {
+    # quem chamou ja preparou o ffmpeg (a CI baixa antes de rodar o script)
+    Write-Output "          usando o build_bin\ffmpeg.exe que ja esta aqui"
+} else {
+    $ff = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
+    if (-not $ff) {
+        $ff = (Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Gyan.FFmpeg*" `
+                -Recurse -Filter ffmpeg.exe -ErrorAction SilentlyContinue |
+                Select-Object -First 1).FullName
+    }
+    if (-not ($ff -and (Test-Path $ff))) {
+        Write-Output "ffmpeg do sistema nao encontrado. Instale com: winget install Gyan.FFmpeg"
+        exit 1
+    }
+    Copy-Item $ff "$proj\build_bin\ffmpeg.exe" -Force
 }
-if (-not ($ff -and (Test-Path $ff))) {
-    Write-Output "ffmpeg do sistema nao encontrado. Instale com: winget install Gyan.FFmpeg"
-    exit 1
-}
-Copy-Item $ff "$proj\build_bin\ffmpeg.exe" -Force
 Write-Output ("          ffmpeg {0:N1} MB" -f ((Get-Item "$proj\build_bin\ffmpeg.exe").Length / 1MB))
 
 Write-Output ""

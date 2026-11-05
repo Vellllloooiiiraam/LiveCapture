@@ -1,6 +1,6 @@
 # LiveCapture
 
-**Versão do código-fonte: 1.4.0** — veja [CHANGELOG-1.4.0.md](CHANGELOG-1.4.0.md) para as novidades.
+**Versão do código-fonte: 1.5.0** — veja [CHANGELOG-1.5.0.md](CHANGELOG-1.5.0.md) para as novidades.
 
 Monitora **várias lives ao mesmo tempo** (YouTube, Twitch, Kick), uma em cada
 aba, e detecta palavras-chave na **voz** do streamer, salvando um clipe MP4 com
@@ -62,6 +62,10 @@ O script reúne o ffmpeg, roda o PyInstaller e gera o
 5. Clique em **Iniciar live**. Dois cliques numa linha copiam o tempo da live.
    Quando a primeira fala sai, aparece embaixo o TXT com a transcrição
    completa (`falas/<canal>.txt`).
+
+> O programa **não abre janelas de CMD**: streamlink, yt-dlp e ffmpeg rodam
+> escondidos. E o modelo usa modo econômico (`int8`) pra segurar RAM/CPU; se o
+> PC der conta de sobra, dá para afrouxar com `LC_COMPUTE`/`LC_THREADS`.
 
 Modo console (sem janela):
 

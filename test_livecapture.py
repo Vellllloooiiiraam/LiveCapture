@@ -115,6 +115,18 @@ class TestUtils(unittest.TestCase):
     def test_find_tool_ffmpeg(self):
         self.assertTrue(shutil.which(FFMPEG) or os.path.exists(FFMPEG), FFMPEG)
 
+    def test_quiet_kwargs_esconde_console_no_windows(self):
+        kw = L.quiet_kwargs()
+        if os.name == "nt":
+            self.assertIn("creationflags", kw)
+            self.assertEqual(kw["creationflags"], getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        else:
+            self.assertEqual(kw, {})
+
+    def test_compute_type_padrao_e_leve(self):
+        self.assertEqual(L.COMPUTE_TYPE, "int8")
+        self.assertLessEqual(L.MODEL_WORKERS, 2)
+
     def test_live_tag_tira_o_nome_do_link(self):
         self.assertEqual(L.live_tag("https://www.twitch.tv/cblol"), "cblol")
         self.assertEqual(L.live_tag("https://kick.com/nome-do-canal"), "nome_do_canal")

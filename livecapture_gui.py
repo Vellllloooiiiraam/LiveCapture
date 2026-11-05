@@ -93,6 +93,16 @@ def tool_argv(name):
     return [find_tool(name)]
 
 
+def quiet_kwargs():
+    """Flags para os subprocessos NÃO abrirem janela de console (Windows).
+
+    Sem isso, cada streamlink/ffmpeg/yt-dlp pisca uma janelinha preta na tela.
+    """
+    if os.name != "nt":
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+
+
 def normalize(text):
     text = unicodedata.normalize("NFKD", text.lower())
     text = "".join(c for c in text if not unicodedata.combining(c))
@@ -131,7 +141,7 @@ def detect_start(url):
         out = subprocess.run(
             tool_argv("yt-dlp") + ["--skip-download", "--no-warnings",
                                    "--print", "%(release_timestamp)s|%(timestamp)s", url],
-            capture_output=True, text=True, timeout=40,
+            capture_output=True, text=True, timeout=40, **quiet_kwargs(),
         ).stdout.strip().splitlines()[-1]
         for value in out.split("|"):
             if value.isdigit():
@@ -223,7 +233,7 @@ def fetch_meta(url):
             tool_argv("yt-dlp") + ["--skip-download", "--no-warnings",
                                    "--print", "%(channel)s", "--print",
                                    "%(uploader)s", "--print", "%(title)s", url],
-            capture_output=True, text=True, timeout=40,
+            capture_output=True, text=True, timeout=40, **quiet_kwargs(),
         ).stdout
         lines = [l.strip() for l in out.splitlines() if l.strip()]
         def clean(v):
@@ -240,20 +250,28 @@ def fetch_meta(url):
 # Uma ÚNICA cópia do Whisper atende todas as lives: mesmo modelo = mesma RAM.
 # N workers dentro do modelo permite algumas transcrições em paralelo (mais
 # que isso, os chamados entram numa fila interna do próprio modelo).
-MODEL_WORKERS = 3
+MODEL_WORKERS = 2               # transcrições em paralelo (menos = menos CPU)
+CPU_THREADS = 2                 # núcleos por transcrição (evita chupar a máquina)
+COMPUTE_TYPE = "int8"           # leve e rápido no CPU (float32 é o mais pesado)
 _MODELS: dict = {}
 _MODEL_LOCK = threading.Lock()
 
 
 def get_model(model_name):
-    """Devolve um WhisperModel compartilhado entre todas as lives."""
+    """Devolve um WhisperModel compartilhado entre todas as lives.
+
+    Usa int8 + poucas threads para segurar RAM/CPU. Dá para afrouxar por
+    variável de ambiente: LC_COMPUTE=int8_float32, LC_THREADS=0 (todos).
+    """
     from faster_whisper import WhisperModel   # demorado só na primeira vez
+    compute = os.environ.get("LC_COMPUTE", COMPUTE_TYPE)
+    threads = int(os.environ.get("LC_THREADS", CPU_THREADS))
     with _MODEL_LOCK:
         model = _MODELS.get(model_name)
         if model is None:
             model = _MODELS[model_name] = WhisperModel(
-                model_name, device="auto", compute_type="default",
-                num_workers=MODEL_WORKERS)
+                model_name, device="auto", compute_type=compute,
+                num_workers=MODEL_WORKERS, cpu_threads=threads)
         return model
 
 
@@ -329,13 +347,13 @@ def make_clip(tmp_dir, list_path, media_t, pre, post, out_path, stop):
         res = subprocess.run(
             common + ["-c", "copy", "-avoid_negative_ts", "make_zero",
                       "-movflags", "+faststart", out_path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **quiet_kwargs())
         ok = res.returncode == 0 and os.path.exists(out_path)
         if not ok:                       # -c copy falhou: recodifica para não perder o clipe
             res = subprocess.run(
                 common + ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
                           "-movflags", "+faststart", out_path],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **quiet_kwargs())
             ok = res.returncode == 0 and os.path.exists(out_path)
         return ok
     finally:
@@ -392,7 +410,7 @@ class Worker(threading.Thread):
         sl = subprocess.Popen(
             tool_argv("streamlink") + [self.url, quality,
                                        "--stdout", "--loglevel", "error"],
-            stdout=subprocess.PIPE)
+            stdout=subprocess.PIPE, **quiet_kwargs())
 
         cmd = [find_tool("ffmpeg"), "-loglevel", "error", "-i", "pipe:0",
                "-map", "0:a:0", "-f", "s16le", "-ac", "1", "-ar", str(SAMPLE_RATE), "pipe:1"]
@@ -407,7 +425,7 @@ class Worker(threading.Thread):
                     "-segment_list_flags", "+live",
                     os.path.join(self.tmp, "seg_%06d.ts")]
         ff = subprocess.Popen(cmd, stdin=sl.stdout, stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL)
+                              stderr=subprocess.DEVNULL, **quiet_kwargs())
         sl.stdout.close()
         self.procs = [sl, ff]
 
@@ -535,7 +553,7 @@ class LivePanel(ttk.Frame):
         ttk.Label(side, text="Modelo:").pack(anchor="w", pady=(8, 0))
         self.model = ttk.Combobox(side, values=["tiny", "base", "small", "medium"],
                                   state="readonly", width=10)
-        self.model.set("small")
+        self.model.set("base")
         self.model.pack(anchor="w")
 
         opts = ttk.Frame(self, padding=(10, 0))
